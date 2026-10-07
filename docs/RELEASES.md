@@ -27,7 +27,7 @@ The receiver uses GitHub's official pinned `actions/create-github-app-token` act
 
 For cross-repository dispatch, ordinary source `GITHUB_TOKEN` is insufficient. Supply `RELEASE_DISPATCH_TOKEN` to each enrolled source repository: an independently managed credential restricted to **Actions: write on delivery_control only**. A fine-grained personal token with only that selected repository and permission is the simplest initial option. Use an expiry and rotate it. An externally issued short-lived App installation token can replace it; do not distribute the release App private key. The dispatch credential can affect central Actions; it is not a cryptographic proof of the sending repository. The receiver independently validates the referenced source run and main ancestry.
 
-The current GitHub connection rejected branch creation with HTTP 403, so this bundle has not been pushed or activated. Credentials and App installation were not observed or configured.
+October 7 qualification confirmed repository admin/push access, but the central variable list and secret-name list are empty. The CLI credential cannot enumerate App installations (HTTP 403), and repository installation lookup requires App authentication (HTTP 401). App configuration and a disposable live release remain unverified.
 
 ## Install the receiver
 
@@ -58,7 +58,11 @@ gh secret set RELEASE_APP_PRIVATE_KEY --repo susanbeasles/delivery_control
 
 ## Enroll each repository
 
-Install `templates/auto-release.yml` as `.github/workflows/auto-release.yml`, through the repository's normal signed commit and promotion process. Set its dispatch credential interactively:
+Install `templates/auto-release.yml` as `.github/workflows/auto-release.yml`, through the repository's normal signed commit and promotion process.
+
+The template now calls workflow_depot's `request-release.yml` at the exact signed source revision `a99e0fe6a66ebffbcd33ca9921b53e0b069fc202`. Review that dependency before installing the caller and allow that pinned reusable workflow in each source repository's Actions policy. workflow_depot is currently public. The reusable workflow uses the caller's repository/SHA/run context; keep the `auto-release.yml` source filename because the receiver validates it. Pass only the dispatch credential through the explicit secret mapping, not `secrets: inherit`. No release App private key enters workflow_depot or source repositories.
+
+Set the dispatch credential interactively:
 
 ```sh
 gh secret set RELEASE_DISPATCH_TOKEN --repo susanbeasles/REPOSITORY
