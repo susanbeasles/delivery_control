@@ -16,7 +16,7 @@ These are official **source releases**, with GitHub's source archives. Binary bu
 
 ## Credentials
 
-Create a dedicated release GitHub App and install it on the personal account repositories to be released. Set repository permissions **Contents: write**, **Actions: read**, and the automatic **Metadata: read**. No webhook is required. If installing on all repositories, new repositories are covered by the App installation, but still need the caller workflow and dispatch secret.
+Create a dedicated release GitHub App and install it on the personal account repositories to be released. Set repository permissions **Contents: write**, **Actions: read**, **Administration: read** (immutable-settings readback only), and the automatic **Metadata: read**. No webhook is required. If installing on all repositories, new repositories are covered by the App installation, but still need the caller workflow and dispatch secret.
 
 In `delivery_control`, configure:
 
@@ -92,7 +92,7 @@ The second command requests the dispatch credential with hidden input; signing m
 
 Give the App authority to **create** release tags where tag-creation rules require it. Preserve separate no-bypass rules forbidding tag **update and deletion**. An App token does not automatically override rulesets. Do not give the App a bypass on the update/delete ruleset. The manager performs neither operation.
 
-Enable GitHub immutable releases per repository using your existing settings/policy mechanism before publication if immutability is required. This workflow does not change administrative settings. Tags are annotated through GitHub's Git API; they are not cryptographically signed Git tags. Required signed tags would need a separate signing integration.
+Enable GitHub immutable releases per repository using your existing settings/policy mechanism before publication. The receiver requires readable enabled settings before any mutation and rechecks before tag creation and publication. It verifies `immutable: true` on both new and resumed managed releases. Missing or disabled settings, mutable results and setting drift stop reconciliation. The release App needs Administration read for this API, not Administration write; this workflow does not change administrative settings. Tags are annotated through GitHub's Git API; they are not cryptographically signed Git tags. Required signed tags would need a separate signing integration.
 
 ## Ordering, retries, and verification
 
@@ -113,3 +113,15 @@ Use a disposable enrolled repository for the first real test:
 Local automated tests cover semver, source identity rejection, source ordering, duplicate requests, interrupted publication, pagination, and uncertain mutation behavior. A real App-backed end-to-end run remains required after configuration.
 
 Official references: [App token action](https://github.com/actions/create-github-app-token), [GITHUB_TOKEN scope](https://docs.github.com/en/actions/concepts/security/github_token), [workflow dispatch](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event), [concurrency queues](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency), and [immutable releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases).
+
+## Immutable publication qualification
+
+The receiver checks GitHub's immutable-release settings endpoint and the actual
+release `immutable` flag. Tests cover missing/disabled settings, mutable new and
+existing managed releases, and settings drifting between two pushes. Publication
+failure leaves tags/releases retained for explicit reconciliation; it never
+recreates, updates or deletes a published mutable release to hide the failure.
+On October 7, 2026, the personal owner credential observed immutable releases
+enabled on `delivery_control`. The dedicated release App's permissions and an
+actual immutable publication remain unqualified. No installed App permissions or
+repository settings were changed by this source update.
