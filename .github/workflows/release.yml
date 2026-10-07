@@ -1,0 +1,61 @@
+name: Publish official source releases
+run-name: Release ${{ inputs.repository }} at ${{ inputs.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Source owner/repository
+        required: true
+        type: string
+      repository_id:
+        description: Numeric source repository ID
+        required: true
+        type: string
+      sha:
+        description: Exact main push SHA
+        required: true
+        type: string
+      source_run_id:
+        description: Source auto-release workflow run ID
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: official-release-${{ inputs.repository }}
+  queue: max
+jobs:
+  release:
+    if: github.repository == 'susanbeasles/delivery_control' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate dispatch before issuing credentials
+        id: request
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { validateRequest } from './src/releases.mjs';
+          const { inputs } = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const q = validateRequest({ repository: inputs.repository, repositoryID: inputs.repository_id, sha: inputs.sha, runID: inputs.source_run_id });
+          appendFileSync(process.env.GITHUB_OUTPUT, `repository=${q.repository.split('/')[1]}\n`);
+          JS
+      - name: Issue a token for this source repository only
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: susanbeasles
+          repositories: ${{ steps.request.outputs.repository }}
+          permission-contents: write
+          permission-actions: read
+      - name: Reconcile main pushes and publish releases
+        env:
+          RELEASE_TOKEN: ${{ steps.app.outputs.token }}
+        run: node src/releases.mjs
