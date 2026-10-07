@@ -55,6 +55,7 @@ jobs:
           repositories: ${{ steps.request.outputs.repository }}
           permission-contents: write
           permission-actions: read
+          permission-administration: read
       - name: Reconcile main pushes and publish releases
         env:
           RELEASE_TOKEN: ${{ steps.app.outputs.token }}
