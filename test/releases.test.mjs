@@ -74,6 +74,27 @@ test('tag survives interrupted publication and rerun publishes without retagging
   await release(request, f.api);
   assert.equal(f.tags.length, 2); assert.equal(f.releases.size, 2);
 });
+test('interrupted tag publication requires its original source run in verified history', async () => {
+  for (const sourceRunID of [999, 12]) {
+    const f = fixture(); f.failNextPublish();
+    await assert.rejects(release(request, f.api), /interrupted/);
+    const object = [...f.objects.values()][0];
+    object.message = JSON.stringify({ ...JSON.parse(object.message), sourceRunID });
+    const before = f.writes.length;
+    await assert.rejects(release(request, f.api), /source run/);
+    assert.equal(f.writes.length, before);
+    assert.equal(f.releases.size, 0);
+  }
+});
+test('a later push to the same SHA preserves the verified original release run', async () => {
+  const f = fixture(); await release(request, f.api);
+  f.runs.push({ ...f.runs[1], id: 13, run_number: 3 });
+  const before = f.writes.length;
+  await release({ ...request, runID: 13 }, f.api);
+  assert.equal(f.writes.length, before);
+  assert.equal(f.tags.length, 2);
+  assert.match(f.releases.get('v0.1.0').body, /actions\/runs\/12\b/);
+});
 test('spoofed run SHA, wrong source workflow, repo identity and divergence fail before writes', async () => {
   for (const mode of ['sha', 'workflow', 'owner', 'diverged']) {
     const f = fixture(), original = f.api.request.bind(f.api);

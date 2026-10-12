@@ -1,0 +1,16 @@
+{
+  "files": {
+    "contract.mjs": {
+      "sha256": "8991b69e6323327264f29a1837a9336c637589e131053eaf5c2106d47bbdbaa2",
+      "sourcePath": "controller/src/cloudflare-deploy/contract.mjs"
+    },
+    "oidc.mjs": {
+      "sha256": "c62e0202640f486899fb341b35c86827054b7739c6ddccb43563b259ad145d36",
+      "sourcePath": "controller/src/cloudflare-deploy/oidc.mjs"
+    }
+  },
+  "schema": "repoctl-shared-source/v1",
+  "sourceBaseCommit": "3ab0fb003ec0c4d5cb37dfa85f3f91df6c273131",
+  "sourceRepository": "repoctl",
+  "sourceState": "uncommitted-local-increment"
+}

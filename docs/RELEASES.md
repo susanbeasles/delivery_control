@@ -102,6 +102,8 @@ A later dispatch can recover an earlier failed caller. Source workflow runs are 
 
 No automatic retry follows an uncertain tag or release mutation. On rerun, the highest managed annotated tag is checked against its source SHA and numeric repository ID, then interrupted publication is resumed. Published releases are not rewritten. Unexpected tags, diverged history, inaccessible APIs, and invalid source identities fail visibly.
 
+Resuming a managed tag also requires its original numeric source run ID and SHA to match the independently retrieved, validated workflow history. Missing or mismatched history blocks publication; a tag's embedded marker cannot authenticate itself.
+
 Use a disposable enrolled repository for the first real test:
 
 1. Push `chore: initial` and confirm `v0.0.1` targets that SHA.

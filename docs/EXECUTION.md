@@ -13,8 +13,9 @@ live issued lease, enrolled baseline and exact fast-forward candidate. It remain
 disabled until commissioning and live qualification. Provider restrictions must
 close races outside the final observation; this is not an atomic policy/ref CAS.
 
-`node --test test/releases.test.mjs test/execution.test.ts` passes13 tests,
-including exact successful confirmation and denied/expired/foreign check cleanup.
+`node --test test/releases.test.mjs test/execution.test.ts` covers exact successful
+confirmation, denied/expired/foreign check cleanup, lost-write uncertainty without
+a second update, and unconfirmed credential revocation rejecting success.
 These standalone tests use synthetic controller/provider responses. repoctl's
 controller suite additionally verifies actual RSA OIDC signatures and durable
 broker integration. No live promotion or credential issuance is qualified by

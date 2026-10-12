@@ -1,0 +1,18 @@
+name: Execute retained Cloudflare deployment
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        description: Exact retained operation ID; authorize this run before its bounded wait expires
+        required: true
+        type: string
+permissions: {}
+jobs:
+  execute:
+    if: github.repository == 'susanbeasles/delivery_control' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/cloudflare-executor.yml
+    with:
+      operation_id: ${{ inputs.operation_id }}

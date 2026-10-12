@@ -114,7 +114,11 @@ export async function release(request, api) {
       if (ref?.object?.type === 'tag') {
         const obj = await api.request(`${root}/git/tags/${ref.object.sha}`);
         let marker; try { marker = JSON.parse(obj.message); } catch { /* existing manual baseline */ }
-        if (marker?.schema === 'delivery-control-release/v1') results.push(await publish(baseline.name, run.head_sha, { id: marker.sourceRunID }));
+        if (marker?.schema === 'delivery-control-release/v1') {
+          const originalRun = runs.find(r => r.id === marker.sourceRunID && r.head_sha === run.head_sha);
+          if (!originalRun) throw Error('Managed tag source run is missing or mismatched; reconcile explicitly');
+          results.push(await publish(baseline.name, run.head_sha, originalRun));
+        }
       }
       continue;
     }

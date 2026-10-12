@@ -1,0 +1,29 @@
+name: Bound Cloudflare execution caller
+on:
+  workflow_call:
+    inputs:
+      operation_id:
+        required: true
+        type: string
+permissions: {}
+jobs:
+  execute:
+    if: github.repository == 'susanbeasles/delivery_control' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.workflow_ref == 'susanbeasles/delivery_control/.github/workflows/execute-cloudflare.yml@refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Wait for exact run authorization and request execution once
+        env:
+          CLOUDFLARE_OPERATION_ID: ${{ inputs.operation_id }}
+        run: node scripts/request-cloudflare-execution.mjs

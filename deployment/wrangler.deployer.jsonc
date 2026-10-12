@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "delivery-control-cloudflare-deployer",
+  "main": "../src/cloudflare-deployer-worker.mjs",
+  "compatibility_date": "2026-10-08",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "vars": {
+    "DEPLOYER_ENABLED": "false",
+    "DEPLOYMENT_POLICY_JSON": "{\"schema\":\"workflow-depot-cloudflare-policy/v1\",\"revision\":1,\"enabled\":false,\"authorizer\":{},\"executor\":{},\"targets\":[],\"maxArtifactBytes\":5242880,\"verification\":{}}"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "DEPLOYMENT_JOBS", "class_name": "DeploymentJob" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DeploymentJob"] }],
+  "r2_buckets": [{ "binding": "DEPLOYMENT_ARTIFACTS", "bucket_name": "workflow-depot-artifacts" }],
+  "services": [{
+    "binding": "DEPLOYMENT_AUTHORITY",
+    "service": "workflow-depot-deployment-authority",
+    "entrypoint": "DeploymentAuthority"
+  }]
+  // CLOUDFLARE_API_TOKEN is a separately commissioned service secret.
+  // No routes or credential values are configured. Commissioning is separate.
+}

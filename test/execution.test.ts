@@ -26,3 +26,15 @@ test('executor requires fresh exact controller confirmation immediately before o
 test('denied, expired or foreign check prevents update and retains cleanup and completion',async()=>{
  for(const mode of ['deny','expired','foreign']){const f=fixture(mode);await assert.rejects(execute(f.options,f.fetcher,()=>1000));assert.deepEqual(f.result(),{writes:0,revokes:1,checks:1,outcomes:['failed']});}
 });
+test('a lost protected-ref update response never retries the write and reports uncertainty',async()=>{
+ const f=fixture();
+ const fetcher=async(url,request={})=>{const result=await f.fetcher(url,request);if(request.method==='PATCH')throw Error('Synthetic lost response');return result;};
+ await assert.rejects(execute(f.options,fetcher,()=>1000),/Synthetic lost response/);
+ assert.deepEqual(f.result(),{writes:1,revokes:1,checks:1,outcomes:['uncertain']});
+});
+test('unconfirmed token revocation cannot produce a successful execution result',async()=>{
+ const f=fixture();
+ const fetcher=async(url,request={})=>{const result=await f.fetcher(url,request);return String(url).endsWith('/installation/token')?new Response(null,{status:503}):result;};
+ await assert.rejects(execute(f.options,fetcher,()=>1000),/revocation unconfirmed/);
+ assert.deepEqual(f.result(),{writes:1,revokes:1,checks:1,outcomes:['updated']});
+});
