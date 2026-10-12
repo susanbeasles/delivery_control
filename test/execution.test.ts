@@ -6,6 +6,7 @@ function fixture(mode='allow') {
  let writes=0,revokes=0,checks=0,tip=sha('b');const outcomes=[];
  const intent={repository:'owner/fixture',repositoryID:7,branch:'main',baseSHA:sha('b'),commitSHA:sha('c'),treeSHA:sha('d')};
  const options={operationID,controller:'https://controller.example/',oidcURL:'https://run.actions.githubusercontent.com/token',oidcBearer:'fixture',audiencePrefix:'repoctl'};
+ options.advanceMain=async input=>{assert.equal(checks,1);assert.equal(input.baseSHA,intent.baseSHA);assert.equal(input.commitSHA,intent.commitSHA);writes++;tip=intent.commitSHA;};
  const fetcher=async(url,request={})=>{
   url=String(url);
   if(url.includes('.actions.githubusercontent.com'))return Response.json({value:'fixture-oidc'});
@@ -15,7 +16,7 @@ function fixture(mode='allow') {
   if(url.endsWith('/installation/token')){revokes++;return new Response(null,{status:204});}
   if(url.endsWith('/repos/owner/fixture'))return Response.json({id:7});
   if(url.includes('/git/commits/'))return Response.json({sha:intent.commitSHA,parents:[{sha:intent.baseSHA}],tree:{sha:intent.treeSHA},verification:{verified:true}});
-  if(request.method==='PATCH'){assert.equal(checks,1);writes++;tip=intent.commitSHA;}
+  if(request.method==='PATCH')throw Error('Unconditional provider ref API forbidden');
   return Response.json({object:{sha:tip}});
  };
  return {options,fetcher,result:()=>({writes,revokes,checks,outcomes})};
@@ -28,7 +29,8 @@ test('denied, expired or foreign check prevents update and retains cleanup and c
 });
 test('a lost protected-ref update response never retries the write and reports uncertainty',async()=>{
  const f=fixture();
- const fetcher=async(url,request={})=>{const result=await f.fetcher(url,request);if(request.method==='PATCH')throw Error('Synthetic lost response');return result;};
+ const original=f.options.advanceMain;f.options.advanceMain=async input=>{await original(input);throw Error('Synthetic lost response');};
+ const fetcher=f.fetcher;
  await assert.rejects(execute(f.options,fetcher,()=>1000),/Synthetic lost response/);
  assert.deepEqual(f.result(),{writes:1,revokes:1,checks:1,outcomes:['uncertain']});
 });

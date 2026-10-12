@@ -2,8 +2,9 @@
 
 `createSourcePublisher` publishes retained objects from the same complete bare
 Git store used by the source snapshotter. It sends an already verified signed
-candidate to an immutable `promotion/<sequence>/shadow` ref and creates its
-deterministic draft PR. The original source history and main remain unchanged.
+candidate to `int/<working-branch>` and creates its draft PR. Replacement closes
+the exact prior PR, deletes the ref with an expected-SHA lease, recreates the same
+ref and opens a new PR. The ref is never updated in place. The original source history and main remain unchanged.
 Paired approved source/main tags use the same create-only transport.
 
 Install the source core's private `authorizePublication` capability and existing
@@ -27,3 +28,8 @@ promotion still requires its owner, independent validator and execution-owner
 envelopes; only the existing executor advances main from M to signed S.
 
 Run `node --test test/source-git.test.mjs test/source-publisher.test.mjs`.
+
+Main advancement fetches and verifies the candidate object, requiring exactly one
+parent equal to current main and the accepted tree. An expected-main lease then
+advances main to that exact checked commit. A concurrent main change fails closed;
+there is no rebase, merge commit or history rewrite fallback.
