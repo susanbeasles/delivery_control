@@ -15,3 +15,14 @@ test('runtime targets remain blocked before any credential or deployment action'
 test('source receipt exception cannot authorize a runtime target',async()=>{await assert.rejects(verifyDeploymentRequest(q,fixture(),{self:true}),/Invalid controller source receipt/);});
 test('retired Worker targets cannot be reintroduced through dispatch',()=>{for(const [target,repository,repository_id] of [['deployment-authority','susanbeasles/workflow_depot','1405415683'],['cloudflare-deployer','susanbeasles/delivery_control','1405415291']])assert.throws(()=>validateDeploymentRequest({...q,target,repository,repository_id}),/Unregistered/);});
 test('dedicated application sources own their targets, shared login does not',()=>{for(const [target,repository,repository_id] of [['ghcaretaker','susanbeasles/ghcaretaker','1405513776'],['backup-control','susanbeasles/backup-control','1407276404'],['backup-setup','susanbeasles/backup-control','1407276404']]){assert.throws(()=>validateDeploymentRequest({...q,target}));assert.equal(validateDeploymentRequest({...q,target,repository,repository_id}).repository,repository);}});
+test('controller main receipt verifies its in-progress push using only read access',async()=>{
+ const self={repository:'susanbeasles/delivery_control',repository_id:'1405415291',sha:'c'.repeat(40),source_run_id:'999',target:'delivery-control-source'};
+ const api={request:async path=>{
+  if(path.endsWith('/actions/runs/999'))return {event:'push',head_branch:'main',head_sha:self.sha,repository:{id:1405415291},status:'in_progress',workflow_id:8};
+  if(path.endsWith('/actions/workflows/8'))return {path:'.github/workflows/deploy.yml'};
+  if(path.includes('/commits/'))return {sha:self.sha,commit:{verification:{verified:true}}};
+  if(path.endsWith('/git/ref/heads/main'))return {object:{sha:self.sha}};
+  return {id:1405415291,owner:{id:215839550,login:'susanbeasles'},default_branch:'main',fork:false,archived:false};
+ }};
+ assert.equal((await verifyDeploymentRequest(self,api,{self:true})).service.state,'source-only');
+});
