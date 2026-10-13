@@ -60,6 +60,11 @@ export async function release(request, api) {
   const root = `/repos/${q.repository}`;
   const repo = await api.request(root);
   if (repo?.id !== q.repositoryID || repo.owner?.id !== OWNER_ID || repo.owner?.login !== OWNER || repo.archived || repo.fork || repo.default_branch !== 'main') throw Error('Repository identity or main policy mismatch');
+  async function requireImmutable() {
+    const settings = await api.request(`${root}/immutable-releases`);
+    if (settings?.enabled !== true) throw Error('Immutable releases must be enabled and readable before publication');
+  }
+  await requireImmutable();
   const source = await api.request(`${root}/actions/runs/${q.runID}`);
   if (source?.event !== 'push' || source.head_branch !== 'main' || source.head_sha !== q.sha || source.repository?.id !== q.repositoryID) throw Error('Source run does not identify the requested main push');
   const workflow = await api.request(`${root}/actions/workflows/${source.workflow_id}`);
@@ -92,12 +97,13 @@ export async function release(request, api) {
     if (marker.schema !== 'delivery-control-release/v1' || marker.repositoryID !== q.repositoryID || marker.sha !== targetSHA || marker.sourceRunID !== run.id) throw Error('Release tag identity mismatch');
     const existing = await api.request(`${root}/releases/tags/${tag}`);
     if (existing && !existing.draft) {
-      if (existing.prerelease) throw Error('Expected official stable release');
+      if (existing.prerelease || existing.immutable !== true) throw Error('Expected official stable immutable release; reconcile existing publication');
       return { tag, sha: targetSHA, url: existing.html_url, resumed: true };
     }
+    await requireImmutable(); // Detect settings drift before publishing the retained tag.
     const body = { tag_name: tag, target_commitish: targetSHA, name: tag, draft: false, prerelease: false, make_latest: 'true', body: `Automated source release for ${q.repository}.\n\nCommit: ${targetSHA}\nSource push: https://github.com/${q.repository}/actions/runs/${run.id}\n\nThis release contains GitHub source archives. Binary packages and verified build assets are published separately.` };
     const published = existing ? await api.request(`${root}/releases/${existing.id}`, 'PATCH', body) : await api.request(`${root}/releases`, 'POST', body);
-    if (published?.tag_name !== tag || published.draft || published.prerelease) throw Error('Release publication readback mismatch');
+    if (published?.tag_name !== tag || published.draft || published.prerelease || published.immutable !== true) throw Error('Release publication readback mismatch');
     return { tag, sha: targetSHA, url: published.html_url };
   }
   for (const run of runs) {
@@ -124,6 +130,7 @@ export async function release(request, api) {
     }
     const tag = nextVersion(baseline?.name, commits.map(c => c.commit.message));
     const message = JSON.stringify({ schema: 'delivery-control-release/v1', repositoryID: q.repositoryID, sha: run.head_sha, sourceRunID: run.id });
+    await requireImmutable(); // No tag mutation if immutability became unavailable.
     const obj = await api.request(`${root}/git/tags`, 'POST', { tag, message, object: run.head_sha, type: 'commit' });
     await api.request(`${root}/git/refs`, 'POST', { ref: `refs/tags/${tag}`, sha: obj.sha });
     results.push(await publish(tag, run.head_sha, run));

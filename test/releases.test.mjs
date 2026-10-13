@@ -32,6 +32,7 @@ function fixture() {
     },
     async request(path, method = 'GET', body) {
       if (method !== 'GET') writes.push({ path, method, body });
+      if (path === `${root}/immutable-releases`) return { enabled: true };
       if (path === root) return { id: 123, owner: { id: OWNER_ID, login: 'susanbeasles' }, default_branch: 'main' };
       if (path.includes('/actions/runs/')) return runs.find(r => r.id === Number(path.split('/').at(-1)));
       if (path.endsWith('/actions/workflows/77')) return { path: '.github/workflows/auto-release.yml' };
@@ -47,7 +48,7 @@ function fixture() {
       if (path.includes('/releases/tags/')) return releases.get(path.split('/').at(-1)) ?? null;
       if (path.endsWith('/releases') && method === 'POST') {
         if (failPublish) { failPublish = false; throw Error('Simulated interrupted publish'); }
-        const result = { ...body, id: releases.size + 1, html_url: `https://github.com/susanbeasles/example/releases/tag/${body.tag_name}` }; releases.set(body.tag_name, result); return result;
+        const result = { ...body, immutable: true, id: releases.size + 1, html_url: `https://github.com/susanbeasles/example/releases/tag/${body.tag_name}` }; releases.set(body.tag_name, result); return result;
       }
       throw Error(`Unexpected request ${method} ${path}`);
     },
@@ -102,4 +103,28 @@ test('HTTP write failures never auto-retry uncertain mutations', async () => {
   const api = new API('test-only', async () => { count++; return { ok: false, status: 422 }; });
   await assert.rejects(api.request('/repos/susanbeasles/example/git/refs', 'POST', {}), /422/);
   assert.equal(count, 1);
+});
+
+test('missing or disabled immutable settings block before tag and release writes', async () => {
+ for (const settings of [null, {}, {enabled:false}]) {
+  const f=fixture(), original=f.api.request.bind(f.api);
+  f.api.request=(path,...args)=>path.endsWith('/immutable-releases')?Promise.resolve(settings):original(path,...args);
+  await assert.rejects(release(request,f.api),/Immutable releases/);assert.equal(f.writes.length,0);
+ }
+});
+test('mutable new or existing managed releases never count as successful publication', async () => {
+ const f=fixture(),original=f.api.request.bind(f.api);
+ f.api.request=async(path,...args)=>{const v=await original(path,...args);return path.endsWith('/releases')&&args[0]==='POST'?{...v,immutable:false}:v;};
+ await assert.rejects(release(request,f.api),/readback mismatch/);
+ assert.equal(f.releases.size,1);
+ f.api.request=original;
+ for(const value of f.releases.values())value.immutable=false;
+ const before=f.writes.length;
+ await assert.rejects(release(request,f.api),/immutable release/);assert.equal(f.writes.length,before);
+});
+test('immutability drift during a multi-push release stops subsequent mutations',async()=>{
+ const f=fixture(),original=f.api.request.bind(f.api);let checks=0;
+ f.api.request=(path,...args)=>path.endsWith('/immutable-releases')?Promise.resolve({enabled:++checks<4}):original(path,...args);
+ await assert.rejects(release(request,f.api),/Immutable releases/);
+ assert.equal(f.tags.length,1);assert.equal(f.releases.size,1);
 });
