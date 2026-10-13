@@ -29,8 +29,29 @@ concurrency:
   group: central-deployment-admission
   cancel-in-progress: false
 jobs:
+  source:
+    if: github.repository == 'susanbeasles/delivery_control' && github.repository_id == '1405415291' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Record signed current-main source receipt without deployment credentials
+        run: node src/deployments.mjs admit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
   admit:
-    if: github.repository == 'susanbeasles/delivery_control' && github.repository_id == '1405415291' && github.ref == 'refs/heads/main'
+    if: github.repository == 'susanbeasles/delivery_control' && github.repository_id == '1405415291' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -68,7 +89,7 @@ jobs:
           DEPLOY_REQUEST_JSON: ${{ toJSON(inputs) }}
   deploy:
     needs: admit
-    if: needs.admit.outputs.state != 'source-only'
+    if: needs.admit.result == 'success' && needs.admit.outputs.state != 'source-only'
     permissions:
       contents: write
       id-token: write
