@@ -478,6 +478,46 @@ test('a crash after the pointer write keeps record and pointer identical, so lat
   assert.equal(h.cf.activeRelease(SCRIPT), 'v1.2.0');
 });
 
+test('an unreadable pointer is refused as pointer_conflict before anything is deployed', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  h.state.objects.get('pointers/prosrus/production/current.json')!.bytes = new TextEncoder().encode('{not json');
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
+});
+
+test('a pointer edited after planning is caught again at the commit, not overwritten', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  // The first read of current.json is the planning check; edit the pointer right after it, so the
+  // edit lands while targets deploy and only the commit-time swap can see it.
+  const key = 'pointers/prosrus/production/current.json';
+  const original = h.state.get.bind(h.state);
+  let reads = 0;
+  let doc: any;
+  (h.state as any).get = async (k: string, options?: any) => {
+    const result = await original(k, options);
+    if (k === key && ++reads === 1) {
+      const current = h.state.objects.get(key)!;
+      doc = JSON.parse(new TextDecoder().decode(current.bytes));
+      current.bytes = new TextEncoder().encode(JSON.stringify({ ...doc, generation: doc.generation + 1 }));
+    }
+    return result;
+  };
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.notEqual(final.phase, 'SUCCEEDED');
+  assert.equal(JSON.parse(new TextDecoder().decode(h.state.objects.get('pointers/prosrus/production/current.json')!.bytes)).generation, doc.generation + 1, 'the edited pointer was not overwritten');
+});
+
 test('a pointer that exists before any release is committed is refused', async () => {
   const h = harness();
   const release = await buildRelease('v1.0.0');

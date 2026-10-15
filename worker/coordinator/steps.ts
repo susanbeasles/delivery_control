@@ -454,7 +454,7 @@ async function commit(deps: StepDeps, ctx: StepContext): Promise<StepResult> {
     targets,
     committedAt: isoAt(deps.clock.now()),
   };
-  const stored = await swapCurrentPointer(deps.state, r.application, r.environment, p.expectedPriorDeploymentId, pointerDocument(r.application, r.environment, committed));
+  const stored = await swapCurrentPointer(deps.state, r.application, r.environment, previous ?? null, pointerDocument(r.application, r.environment, committed));
   // A retry after a crash keeps the timestamp the first attempt wrote, so record and pointer match.
   committed.committedAt = stored.committedAt;
   if (previous) {
