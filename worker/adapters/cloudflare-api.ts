@@ -56,7 +56,7 @@ async function call(ctx: ApiContext, method: string, path: string, body: BodyIni
   const response = await fetchBounded(
     ctx.fetcher,
     `${CLOUDFLARE_API}/accounts/${ctx.accountId}${path}`,
-    { method, headers, body, timeoutMs: TIMEOUT_MS, maxBytes: MAX_RESPONSE, redirect: 'manual' },
+    { method, headers, body, timeoutMs: TIMEOUT_MS, maxBytes: MAX_RESPONSE },
     'cloudflare_api',
   );
   let parsed: Json = null;

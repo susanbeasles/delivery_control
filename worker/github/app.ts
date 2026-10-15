@@ -112,7 +112,7 @@ export class GitHubApp {
     const response = await fetchBounded(
       this.config.fetcher,
       `${GITHUB_API}/repos/${repository}/installation`,
-      { method: 'GET', headers: headers(`Bearer ${await this.appJwt()}`), timeoutMs: 10_000, maxBytes: 64 * 1024, redirect: 'error' },
+      { method: 'GET', headers: headers(`Bearer ${await this.appJwt()}`), timeoutMs: 10_000, maxBytes: 64 * 1024 },
       'github_installation',
     );
     if (response.status === 404) fail('github_app_not_installed', `deployer App is not installed on ${repository}`);
@@ -139,7 +139,6 @@ export class GitHubApp {
         body: JSON.stringify({ repository_ids: [repositoryId], permissions }),
         timeoutMs: 10_000,
         maxBytes: 64 * 1024,
-        redirect: 'error',
       },
       'github_token',
     );

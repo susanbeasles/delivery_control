@@ -8,9 +8,17 @@ export interface BoundedResponse {
   bytes: Uint8Array;
 }
 
-export interface BoundedInit extends RequestInit {
+export interface BoundedInit extends Omit<RequestInit, 'redirect'> {
   timeoutMs: number;
   maxBytes: number;
+  /**
+   * The Workers runtime rejects `redirect: 'error'` ("does not make sense at the edge"), so every
+   * request is sent with `manual` and an unexpected 3xx is refused here instead. Only `manual` may
+   * be named, which keeps `error` from creeping back in.
+   */
+  redirect?: 'manual';
+  /** Hand 3xx responses back to the caller instead of refusing them. */
+  allowRedirect?: boolean;
 }
 
 /**
@@ -18,12 +26,16 @@ export interface BoundedInit extends RequestInit {
  * aborts as soon as the limit is crossed. Network failures and 5xx/429 surface as retryable.
  */
 export async function fetchBounded(fetcher: Fetcher, url: string, init: BoundedInit, code: string): Promise<BoundedResponse> {
-  const { timeoutMs, maxBytes, ...rest } = init;
+  const { timeoutMs, maxBytes, allowRedirect = false, redirect: _manual, ...rest } = init;
   let response: Response;
   try {
-    response = await fetcher(url, { ...rest, redirect: rest.redirect ?? 'manual', signal: AbortSignal.timeout(timeoutMs) });
+    response = await fetcher(url, { ...rest, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
   } catch (cause) {
     return fail(code, `request to ${safeOrigin(url)} failed`, { retryable: true, cause });
+  }
+  if (!allowRedirect && response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    return fail(code, `request to ${safeOrigin(url)} was redirected`);
   }
   const bytes = await readBounded(response.body, maxBytes, code);
   return { status: response.status, headers: response.headers, bytes };

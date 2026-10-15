@@ -97,7 +97,7 @@ export function githubReporter(github: GitHubApp, fetcher: Fetcher): GitHubRepor
     const response = await fetchBounded(
       fetcher,
       `${GITHUB_API}/repos/${repository}${path}`,
-      { method: 'POST', headers: { ...headers(`Bearer ${token}`), 'content-type': 'application/json' }, body: JSON.stringify(body), timeoutMs: 10_000, maxBytes: 256 * 1024, redirect: 'error' },
+      { method: 'POST', headers: { ...headers(`Bearer ${token}`), 'content-type': 'application/json' }, body: JSON.stringify(body), timeoutMs: 10_000, maxBytes: 256 * 1024 },
       'github_report',
     );
     if (response.status !== 201) throw statusError('github_report', what, response.status);
