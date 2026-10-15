@@ -60,6 +60,23 @@ export function pointerDocument(application: string, environment: string, c: Com
 }
 
 /**
+ * Refuse, before anything is deployed, when `current.json` does not name the deployment the
+ * coordinator believes is committed (restored from backup, edited by hand, storage reset). The
+ * swap at commit time checks again, but by then production has already changed.
+ */
+export async function checkCurrentPointer(bucket: R2Bucket, application: string, environment: string, expectedDeploymentId: string | null): Promise<void> {
+  const key = pointerKey(application, environment, 'current');
+  const existing = await bucket.get(key);
+  if (existing === null) {
+    if (expectedDeploymentId !== null) fail('pointer_conflict', `${key} is missing but deployment ${expectedDeploymentId} is committed`);
+    return;
+  }
+  const doc = parseStrictJsonBytes(new Uint8Array(await existing.arrayBuffer()), 256 * 1024, 'pointer_invalid') as Json;
+  const current = doc !== null && typeof doc === 'object' && !Array.isArray(doc) ? doc['deploymentId'] : undefined;
+  if (current !== expectedDeploymentId) fail('pointer_conflict', `${key} names ${String(current)}, but ${String(expectedDeploymentId)} is committed`);
+}
+
+/**
  * Move `current.json` from the expected deployment to the new one. Returns normally when the
  * pointer now names `next` (including when a previous attempt already moved it).
  */
