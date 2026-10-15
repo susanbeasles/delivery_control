@@ -237,11 +237,11 @@ export function checkInitializedBackend(dataDirState, b) {
  * The state passphrase is in every tofu process's environment, and a plan runs code from a pull
  * request. OpenTofu reaches the filesystem only through these functions (there is no `env()`), so a
  * configuration that names one could read `/proc/self/environ` and smuggle the passphrase into a
- * plan output. Neither stack needs them; any configuration file that names one, or a provider-defined
+ * plan output. `terraform_remote_state` is refused too: with a `local` backend it reads any path. Neither stack needs them; any configuration file that names one, or a provider-defined
  * function, is refused before tofu starts. Comments count too: refusing is cheaper than parsing.
  */
 export const CONFIG_FILE = /\.(?:tf|tofu)(?:\.json)?$/;
-const FILESYSTEM_ACCESS = /\b(?:file(?:base64(?:sha256|sha512)?|md5|sha1|sha256|sha512|exists|set)?|templatefile|templatestring|abspath|pathexpand)\s*\(|provider::/;
+const FILESYSTEM_ACCESS = /\b(?:file(?:base64(?:sha256|sha512)?|md5|sha1|sha256|sha512|exists|set)?|templatefile|templatestring|abspath|pathexpand)\s*\(|provider::|terraform_remote_state/;
 
 export function checkConfigurationText(name, text) {
   // JSON syntax hides expressions behind escapes ("${fil\u0065(...)}"), so its decoded strings,

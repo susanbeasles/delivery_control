@@ -183,6 +183,7 @@ test('configuration that can read the filesystem is refused before tofu runs', (
     'output "x" { value = fileset("/", "**") }',
     'output "x" { value = provider::cloudflare::anything("a") }',
     'output "x" { value = abspath(".") }',
+    'data "terraform_remote_state" "x" { backend = "local" config = { path = "/proc/self/environ" } }',
   ];
   for (const text of refused) {
     assert.throws(() => checkConfigurationText('main.tf', text), (e: any) => e.code === 'config_refused', text);
