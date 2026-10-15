@@ -50,7 +50,7 @@ are in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
 | Component | Repo | Kind | Holds |
 |---|---|---|---|
-| `authorizer` | `authorizer` | Worker + `TokenLedger` DO, custom domain `services.susanb.dev` | its read-only GitHub App key |
+| `authorizer` | `authorizer` | Worker + `TokenLedger` DO, route `services.susanb.dev/*` | its read-only GitHub App key |
 | `deployer` | `deployer` | Worker, `Coordinator` DO, `RunnerJob` DO with container, `EgressGate` entrypoint, queue consumer; no route, no DNS | deployer GitHub App key, `CF_PLAN`, `CF_APPLY`, `R2_STATE_RO`, `R2_STATE_RW`, `TF_ENCRYPTION_INFRA`, one `WORKER_<NAME>` per target |
 | `root-runner` | `deployer` (code), deployed only by the bootstrap path | Worker, `RunnerJob` DO with container; no route, no DNS | `CF_ROOT_APPLY`, `CF_SECRETS_WRITE`, `R2_STATE_ROOT`, `TF_ENCRYPTION_ROOT`, deployer GitHub App key |
 | Terraform `infra-root` | `infra-root` | OpenTofu root | buckets, locks, lifecycle, token inventory, policy layer |
@@ -202,7 +202,7 @@ Secrets Store `control-plane` (values minted by `infra-root/provision`, never by
 | `AUTHORIZER_GITHUB_APP_KEY` | authorizer | App `authorizer`: contents, checks, pull requests, attestations read |
 | `DEPLOYER_GITHUB_APP_KEY` | deployer, root runner | App `deployer`: contents read, deployments write, checks write |
 | `CF_PLAN` | deployer | account and zone reads for plans |
-| `CF_APPLY` | deployer | DNS, Access, routes and custom domains (VERIFY permission), queue consumers, Workers KV Storage Edit (registry value), zone WAF edit, notifications; no R2 admin, no Workers Scripts, no members, no tokens |
+| `CF_APPLY` | deployer | DNS, Access, routes (custom domains need Workers Scripts Write, so the authorizer is served by a DNS record plus route), queue consumers, Workers KV Storage Edit (registry value), zone WAF edit, notifications; no R2 admin, no Workers Scripts, no members, no tokens |
 | `R2_STATE_RO` | deployer | Bucket Item Read on `tf-state` (plans run with `-lock=false`; plan files go through the Worker's `TF_PLANS` binding) |
 | `R2_STATE_RW` | deployer | Bucket Item Write on `tf-state`, `tf-plans`, `tf-state-archive` |
 | `TF_ENCRYPTION_INFRA` | deployer | generated passphrase |
