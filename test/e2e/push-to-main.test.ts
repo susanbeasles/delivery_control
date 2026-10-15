@@ -13,7 +13,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, cpSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPairSync } from 'node:crypto';
@@ -52,15 +54,21 @@ const enrolledPolicy = () => {
 };
 
 async function bundle(esbuild: any, entry: string, policy?: unknown): Promise<string> {
-  const plugins = policy
-    ? [{
-        name: 'e2e-policy',
-        setup(build: any) {
-          build.onResolve({ filter: /authorizer-policy\.json$/ }, () => ({ path: 'policy', namespace: 'e2e-policy' }));
-          build.onLoad({ filter: /.*/, namespace: 'e2e-policy' }, () => ({ contents: JSON.stringify(policy), loader: 'json' }));
-        },
-      }]
-    : [];
+  if (policy) {
+    // Use the production bundler, aliases and compatibility layer of the unified authorizer.
+    const root = mkdtempSync(join(tmpdir(), 'deployer-authorizer-'));
+    try {
+      const tree = join(root, 'authorizer');
+      for (const name of ['src', 'worker', 'policy', 'wrangler.jsonc', 'package.json', 'tsconfig.json']) {
+        if (existsSync(join(authorizerDir, name))) cpSync(join(authorizerDir, name), join(tree, name), {recursive:true});
+      }
+      symlinkSync(join(authorizerDir, 'node_modules'), join(tree, 'node_modules'), 'dir');
+      writeFileSync(join(tree, 'policy/authorizer-policy.json'), JSON.stringify(policy));
+      execFileSync(join(authorizerDir, 'node_modules/.bin/wrangler'), ['deploy','--dry-run','--outdir',join(root,'bundle'),'--config',join(tree,'wrangler.jsonc')], {cwd:tree,env:{...process.env,WRANGLER_SEND_METRICS:'false',CI:'true'},stdio:['ignore','pipe','pipe'],timeout:120000});
+      return readFileSync(join(root,'bundle/index.js'),'utf8');
+    } finally { rmSync(root,{recursive:true,force:true}); }
+  }
+  const plugins: unknown[] = [];
   const result = await esbuild.build({ entryPoints: [entry], bundle: true, format: 'esm', platform: 'neutral', target: 'es2022', write: false, external: ['cloudflare:*'], plugins, logLevel: 'silent' });
   return result.outputFiles[0].text;
 }
@@ -131,8 +139,9 @@ class GitHubEdge {
 
 test('push to main → authorized → ingested → deployed → healthy → committed', { timeout: 120_000, skip: !existsSync(join(authorizerDir, 'worker/index.ts')) && 'authorizer checkout not found' }, async (t) => {
   const root = wranglerRoot();
-  const { Miniflare, convertV4MiniflareOptions, Response: EdgeResponse } = await import(join(root, 'node_modules/miniflare/dist/src/index.js'));
-  const esbuild = await import(join(root, 'node_modules/esbuild/lib/main.js'));
+  const resolveTool = createRequire(join(root, 'package.json'));
+  const { Miniflare, convertV4MiniflareOptions, Response: EdgeResponse } = await import(resolveTool.resolve('miniflare'));
+  const esbuild = await import(resolveTool.resolve('esbuild'));
 
   // GitHub's OIDC signing key and the two Apps' keys, generated per run.
   const oidc = (await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
@@ -214,7 +223,8 @@ test('push to main → authorized → ingested → deployed → healthy → comm
         ...compat,
         modules: [{ type: 'ESModule', path: 'authorizer.js', contents: authorizerCode }],
         bindings: { GITHUB_APP_ID: '101', GITHUB_OWNER_ID: '215839550', OIDC_AUDIENCE: 'services.susanb.dev' },
-        durableObjects: { TOKEN_LEDGER: { className: 'TokenLedger', useSQLite: true } },
+        durableObjects: { TOKEN_LEDGER: { className: 'TokenLedger', useSQLite: true }, TOKENS: { className: 'PromotionLedger', useSQLite: true } },
+        compatibilityFlags: ['global_fetch_strictly_public','nodejs_compat'],
         serviceBindings: { DEPLOYER: { name: 'deployer', entrypoint: 'Deployer' }, ROOT_RUNNER: { name: 'deployer', entrypoint: 'Deployer' } },
         secretsStoreSecrets: { GITHUB_APP_KEY: { store_id: STORE, secret_name: 'AUTHORIZER_GITHUB_APP_KEY' } },
         outboundService: internet,

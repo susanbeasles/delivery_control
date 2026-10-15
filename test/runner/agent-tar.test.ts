@@ -25,7 +25,7 @@ test('a GitHub-style archive extracts with the top directory stripped and symlin
   assert.equal(extractTarball(tarGz(entries), dest, 1024 * 1024), 6);
   assert.equal(readFileSync(join(dest, 'modules/real.tf'), 'utf8'), 'resource "x" "y" {}\n');
   assert.equal(readlinkSync(join(dest, 'link.tf')), 'modules/real.tf');
-  assert.equal(lstatSync(join(dest, 'scripts/run.sh')).mode & 0o7777, 0o755, 'setuid is dropped');
+  assert.equal(lstatSync(join(dest, 'scripts/run.sh')).mode & 0o7777, 0o755 & ~process.umask(), 'setuid is dropped and the process umask is respected');
   assert.equal(readFileSync(join(dest, 'same.tf'), 'utf8'), 'resource "x" "y" {}\n');
   assert.equal(readFileSync(join(dest, `${'long-name-'.repeat(15)}.tf`), 'utf8'), 'pax');
   const ops = plan(entries).map((a: { op: string }) => a.op);
