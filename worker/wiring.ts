@@ -9,7 +9,7 @@ import { fail } from './lib/errors.ts';
 import type { Fetcher } from './lib/fetch.ts';
 import { systemClock, type Clock } from './lib/runtime.ts';
 import { loadRegistry } from './registry/loader.ts';
-import type { RunnerJobRequest, RunnerJobStatus } from './runner/api.ts';
+import type { RunnerJobRequest, RunnerJobRpc, RunnerJobStatus } from './runner/api.ts';
 
 /**
  * Builds the coordinator's dependencies from Worker bindings. Everything platform-specific is here,
@@ -58,10 +58,11 @@ export function registry(env: Env, clock: Clock = systemClock) {
 }
 
 export function runnerClient(env: Env): StepDeps['runner'] {
-  const stub = (jobId: string) => env.RUNNER.getByName(jobId);
+  // Typed through the fixed seam in runner/api.ts rather than the generated namespace type.
+  const stub = (jobId: string) => env.RUNNER.getByName(jobId) as unknown as RunnerJobRpc;
   return {
-    submit: (request: RunnerJobRequest) => stub(request.jobId).submit(request) as Promise<RunnerJobStatus>,
-    status: (jobId: string) => stub(jobId).status() as Promise<RunnerJobStatus | null>,
+    submit: (request: RunnerJobRequest): Promise<RunnerJobStatus> => stub(request.jobId).submit(request),
+    status: (jobId: string): Promise<RunnerJobStatus | null> => stub(jobId).status(),
   };
 }
 
