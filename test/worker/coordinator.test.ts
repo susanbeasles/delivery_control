@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { DeployError } from '../../worker/lib/errors.ts';
 import assert from 'node:assert/strict';
 import { CoordinatorEngine, type EngineDeps } from '../../worker/coordinator/engine.ts';
 import { createStepRunner, type StepDeps } from '../../worker/coordinator/steps.ts';
@@ -454,6 +455,27 @@ test('a pointer that keeps the deployment id but edits any other field is refuse
   assert.equal(final.phase, 'REJECTED');
   assert.equal(final.lastError?.code, 'pointer_conflict');
   assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
+});
+
+test('a crash after the pointer write keeps record and pointer identical, so later releases still deploy', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const original = h.state.put.bind(h.state);
+  let crashed = false;
+  (h.state as any).put = async (key: string, value: unknown, options?: any) => {
+    const result = await original(key, value, options);
+    if (!crashed && key === 'pointers/prosrus/production/current.json') {
+      crashed = true;
+      throw new DeployError('r2_unavailable', 'worker died after the pointer write', { retryable: true });
+    }
+    return result;
+  };
+  const second = await deployed(h, 'v1.1.0');
+  assert.ok(crashed);
+  assert.equal(second.final.phase, 'SUCCEEDED');
+  const third = await deployed(h, 'v1.2.0');
+  assert.equal(third.final.phase, 'SUCCEEDED', String(third.final.lastError?.code));
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.2.0');
 });
 
 test('a pointer that exists before any release is committed is refused', async () => {

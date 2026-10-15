@@ -88,8 +88,10 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Move `current.json` from the expected deployment to the new one. Returns normally when the
- * pointer now names `next` (including when a previous attempt already moved it).
+ * Move `current.json` from the expected deployment to the new one. Returns the `committedAt` the
+ * stored pointer carries: `next`'s own, or, when an earlier attempt already moved the pointer and
+ * crashed before recording it, the timestamp that attempt wrote, so the coordinator's record and
+ * the pointer stay byte-identical (checkCurrentPointer compares them in full).
  */
 export async function swapCurrentPointer(
   bucket: R2Bucket,
@@ -97,7 +99,7 @@ export async function swapCurrentPointer(
   environment: string,
   expectedDeploymentId: string | null,
   next: PointerDocument,
-): Promise<void> {
+): Promise<{ committedAt: string }> {
   const key = pointerKey(application, environment, 'current');
   const existing = await bucket.get(key);
   let condition: R2Conditional;
@@ -107,13 +109,25 @@ export async function swapCurrentPointer(
   } else {
     const doc = parseStrictJsonBytes(new Uint8Array(await existing.arrayBuffer()), 256 * 1024, 'pointer_invalid') as Json;
     const current = doc !== null && typeof doc === 'object' && !Array.isArray(doc) ? doc['deploymentId'] : undefined;
-    if (current === next.deploymentId) return; // already moved by an earlier attempt
+    if (current === next.deploymentId) {
+      // Moved by an earlier attempt. Everything but the timestamp must be what this attempt would write.
+      const committedAt = isPlainJsonObject(doc) && typeof doc['committedAt'] === 'string' ? doc['committedAt'] : null;
+      if (committedAt === null || !bytesEqual(canonicalBytes(doc), canonicalBytes({ ...next, committedAt }))) {
+        fail('pointer_conflict', `${key} names ${next.deploymentId} but differs from what this deployment commits`);
+      }
+      return { committedAt };
+    }
     if (current !== expectedDeploymentId) fail('pointer_conflict', `${key} names ${String(current)}, expected ${String(expectedDeploymentId)}`);
     condition = { etagMatches: existing.etag };
   }
   const bytes = canonicalBytes(next);
   const written = await bucket.put(key, bytes, { onlyIf: condition, sha256: await sha256Hex(bytes), httpMetadata: { contentType: 'application/json' } });
   if (written === null) fail('pointer_conflict', `${key} changed during the swap`, { retryable: true });
+  return { committedAt: next.committedAt };
+}
+
+function isPlainJsonObject(v: Json): v is { [key: string]: Json } {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 /** Best-effort snapshots outside the critical path (rollback target, in-flight view). */
