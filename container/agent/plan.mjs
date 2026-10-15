@@ -235,19 +235,99 @@ export function checkInitializedBackend(dataDirState, b) {
 
 /**
  * The state passphrase is in every tofu process's environment, and a plan runs code from a pull
- * request. OpenTofu reaches the filesystem only through these functions (there is no `env()`), so a
- * configuration that names one could read `/proc/self/environ` and smuggle the passphrase into a
- * plan output. `terraform_remote_state` is refused too: with a `local` backend it reads any path. Neither stack needs them; any configuration file that names one, or a provider-defined
- * function, is refused before tofu starts. Comments count too: refusing is cheaper than parsing.
+ * request. OpenTofu reaches the filesystem only through these functions (there is no `env()`), and
+ * `terraform_remote_state` with a `local` backend reads any path, so a configuration that calls one
+ * could read `/proc/self/environ` and smuggle the passphrase into a plan output. Neither stack needs
+ * them. The check runs on the configuration's code only: comments and literal string text are
+ * dropped by a small HCL lexer, interpolations (`${...}`, `%{...}`) are kept. An identifier cannot be
+ * split by a comment, so `file`, a comment, then `(` still shows `file`, and the bare name is refused whether
+ * or not a call follows. `::` in code means a provider-defined function, which is refused as well.
  */
 export const CONFIG_FILE = /\.(?:tf|tofu)(?:\.json)?$/;
-const FILESYSTEM_ACCESS = /\b(?:file(?:base64(?:sha256|sha512)?|md5|sha1|sha256|sha512|exists|set)?|templatefile|templatestring|abspath|pathexpand)\s*\(|provider::|terraform_remote_state/;
+const FORBIDDEN_NAME = /(?<![\w])(?:file(?:base64(?:sha256|sha512)?|md5|sha1|sha256|sha512|exists|set)?|templatefile|templatestring|abspath|pathexpand|terraform_remote_state)(?![\w])|::/;
+
+const unterminated = (name, what) => new JobFailure('config_refused', `${name} has an unterminated ${what}`);
+
+/** Code text of HCL source (or of one template string when `template` is set), comments and literals blanked. */
+export function hclCode(src, name, template = false) {
+  let out = '';
+  let i = 0;
+  const stack = [template ? { kind: 'template' } : { kind: 'code', depth: 0 }];
+  const openInterpolation = () => {
+    stack.push({ kind: 'code', depth: 0 });
+    out += ' ';
+    i += 2;
+  };
+  while (i < src.length) {
+    const top = stack[stack.length - 1];
+    const c = src[i];
+    const next = src[i + 1];
+    if (top.kind === 'code') {
+      if (c === '#' || (c === '/' && next === '/')) {
+        const end = src.indexOf('\n', i);
+        i = end === -1 ? src.length : end;
+        out += ' ';
+      } else if (c === '/' && next === '*') {
+        const end = src.indexOf('*/', i + 2);
+        if (end === -1) throw unterminated(name, 'comment');
+        i = end + 2;
+        out += ' ';
+      } else if (c === '"') {
+        stack.push({ kind: 'string' });
+        out += ' ';
+        i += 1;
+      } else if (c === '<' && next === '<' && /^<<-?[A-Za-z_][\w-]*\r?\n/.test(src.slice(i, i + 260))) {
+        const m = /^<<-?([A-Za-z_][\w-]*)\r?\n/.exec(src.slice(i, i + 260));
+        stack.push({ kind: 'heredoc', marker: m[1] });
+        out += ' ';
+        i += m[0].length;
+      } else if (c === '}' && top.depth === 0 && stack.length > 1) {
+        stack.pop();
+        out += ' ';
+        i += 1;
+      } else {
+        if (c === '{') top.depth += 1;
+        else if (c === '}') top.depth -= 1;
+        out += c;
+        i += 1;
+      }
+      continue;
+    }
+    // Literal text: a quoted string, a heredoc body or a JSON-syntax template.
+    if (top.kind === 'heredoc' && (i === 0 || src[i - 1] === '\n')) {
+      const end = src.indexOf('\n', i);
+      const line = src.slice(i, end === -1 ? src.length : end);
+      if (line.trim() === top.marker) {
+        stack.pop();
+        i += line.length;
+        continue;
+      }
+    }
+    if ((c === '$' || c === '%') && next === c && src[i + 2] === '{') {
+      i += 3; // `$${` and `%%{` are literal
+    } else if ((c === '$' || c === '%') && next === '{') {
+      openInterpolation();
+    } else if (top.kind === 'string' && c === '\\') {
+      i += 2;
+    } else if (top.kind === 'string' && c === '"') {
+      stack.pop();
+      out += ' ';
+      i += 1;
+    } else if (top.kind === 'string' && c === '\n') {
+      throw unterminated(name, 'string');
+    } else {
+      i += 1;
+    }
+  }
+  if (stack.length !== 1) throw unterminated(name, stack[stack.length - 1].kind === 'code' ? 'interpolation' : stack[stack.length - 1].kind);
+  return out;
+}
 
 export function checkConfigurationText(name, text) {
-  // JSON syntax hides expressions behind escapes ("${fil\u0065(...)}"), so its decoded strings,
-  // keys included, are what gets checked; an unparsable file is refused rather than skipped.
-  const texts = [text];
+  const codes = [];
   if (name.endsWith('.json')) {
+    // JSON syntax: every string is a template and keys can name things, so each decoded key is
+    // checked as code and each decoded string value as a template; escapes like e are gone.
     let doc;
     try {
       doc = JSON.parse(text);
@@ -255,14 +335,18 @@ export function checkConfigurationText(name, text) {
       throw new JobFailure('config_refused', `${name} is not valid JSON`);
     }
     const walk = (v) => {
-      if (typeof v === 'string') texts.push(v);
+      if (typeof v === 'string') codes.push(hclCode(v, name, true));
       else if (Array.isArray(v)) v.forEach(walk);
-      else if (v !== null && typeof v === 'object') for (const [k, x] of Object.entries(v)) (texts.push(k), walk(x));
+      else if (v !== null && typeof v === 'object') for (const [k, x] of Object.entries(v)) (codes.push(k), walk(x));
     };
     walk(doc);
+  } else {
+    codes.push(hclCode(text, name));
   }
-  for (const t of texts) {
-    const match = FILESYSTEM_ACCESS.exec(t);
-    if (match) throw new JobFailure('config_refused', `${name} uses ${match[0].replace(/\s*\($/, '()')}, which can read the runner's environment`);
+  // Block labels are quoted, so the data source type is looked for in the raw text as well.
+  if (/terraform_remote_state/.test(text)) throw new JobFailure('config_refused', `${name} uses terraform_remote_state, which can read the runner's environment`);
+  for (const code of codes) {
+    const match = FORBIDDEN_NAME.exec(code);
+    if (match) throw new JobFailure('config_refused', `${name} uses ${match[0] === '::' ? 'a provider-defined function' : match[0]}, which can read the runner's environment`);
   }
 }

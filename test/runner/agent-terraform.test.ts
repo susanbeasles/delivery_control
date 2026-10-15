@@ -188,6 +188,20 @@ test('configuration that can read the filesystem is refused before tofu runs', (
   for (const text of refused) {
     assert.throws(() => checkConfigurationText('main.tf', text), (e: any) => e.code === 'config_refused', text);
   }
+  // Comments between the name and its arguments, comment markers inside strings, interpolations in
+  // strings and heredocs: the lexer sees through all of them.
+  for (const text of [
+    'output "x" { value = file/* gap */("/proc/self/environ") }',
+    'output "x" { value = file # gap\n("/proc/self/environ") }',
+    'locals { a = "/*" \n b = file("/proc/self/environ") \n c = "*/" }',
+    'output "x" { value = "${filebase64("/proc/self/environ")}" }',
+    'locals { s = <<EOT\n${file("/proc/self/environ")}\nEOT\n}',
+    'output "x" { value = provider /* x */ :: cloudflare :: f("a") }',
+  ]) {
+    assert.throws(() => checkConfigurationText('main.tf', text), (e: any) => e.code === 'config_refused', text);
+  }
+  assert.throws(() => checkConfigurationText('main.tf', 'locals { a = "unterminated }'), (e: any) => e.code === 'config_refused');
+  assert.throws(() => checkConfigurationText('main.tf', 'locals { a = 1 } /* open'), (e: any) => e.code === 'config_refused');
   // JSON escapes hide the name from a raw-text scan; the decoded strings and keys are checked.
   const escaped = '{"output":{"x":{"value":"${fil\\u0065(\\"/proc/self/environ\\")}"}}}';
   assert.doesNotThrow(() => JSON.parse(escaped));
@@ -196,7 +210,10 @@ test('configuration that can read the filesystem is refused before tofu runs', (
   assert.throws(() => checkConfigurationText('x.tf.json', '{'), (e: any) => e.code === 'config_refused');
   const allowed = [
     'resource "cloudflare_workers_kv" "registry" { key_name = "registry" value = jsonencode(local.doc) }',
-    'locals { profile = "x" }  # mentions profile( and filesystem but no call',
+    'locals { profile = "x" }  # mentions file( in a comment, profile and filesystem',
+    '/* file("/x") */ locals { note = "reads a file(/x) and fe80::1" }',
+    'resource "cloudflare_dns_record" "a" { content = "100::" }',
+    'locals { s = <<-EOT\n  the file() function is not called here: $${file("x")}\n  EOT\n}',
     'variable "file_name" { type = string }',
   ];
   for (const text of allowed) checkConfigurationText('main.tf', text);
