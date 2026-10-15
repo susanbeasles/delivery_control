@@ -12,6 +12,7 @@ import {
   type DeploymentRecord,
   type DeploymentState,
   type GitHubStatusState,
+  type HistoryEntry,
   type Meta,
   type OutboxEntry,
   type Phase,
@@ -66,6 +67,7 @@ const META = 'meta';
 const depKey = (id: string): string => `dep:${id}`;
 const tokenKey = (hash: string): string => `token:${hash}`;
 const outboxKey = (seq: number): string => `outbox:${String(seq).padStart(12, '0')}`;
+const releaseKey = (tag: string): string => `committed-release:${tag}`;
 
 /** Phases in which nothing that serves traffic has changed, so failure means REJECTED. */
 const PRE_MUTATION: ReadonlySet<Phase> = new Set(['REQUESTED', 'AUTHORIZED', 'QUEUED', 'VERIFYING', 'PLANNED']);
@@ -74,6 +76,7 @@ export class CoordinatorEngine {
   private readonly d: EngineDeps;
   private flushing: Promise<void> | null = null;
   private flushAgain = false;
+  private readonly githubCreating = new Map<string, Promise<number | null>>();
 
   constructor(deps: EngineDeps) {
     this.d = deps;
@@ -150,7 +153,7 @@ export class CoordinatorEngine {
           }
         }
       } else {
-        const earlier = meta.history.find((h) => h.releaseTag === request.releaseTag);
+        const earlier = this.d.store.get<HistoryEntry>(releaseKey(request.releaseTag)) ?? meta.history.find((h) => h.releaseTag === request.releaseTag);
         if (!earlier) return { status: 'REJECTED', error: 'not_previously_deployed' };
         if (committed?.releaseTag === request.releaseTag) return { status: 'ALREADY_CURRENT', deploymentId: committed.deploymentId, githubDeploymentId: null };
         manifestSha = earlier.manifestSha256;
@@ -463,7 +466,12 @@ export class CoordinatorEngine {
       manifestSha256: committed.manifestSha256,
       sourceCommit: committed.sourceCommit,
     };
-    meta.history = [...meta.history.filter((h) => h.releaseTag !== committed.releaseTag), entry].slice(-HISTORY_LIMIT);
+    const history = [...meta.history.filter((h) => h.releaseTag !== committed.releaseTag), entry];
+    // Eligibility is durable per tag; the bounded history is only a recent-release view.
+    this.d.store.put(releaseKey(entry.releaseTag), entry);
+    // Preserve legacy entries as they leave the recent view, too.
+    for (const evicted of history.slice(0, -HISTORY_LIMIT)) this.d.store.put(releaseKey(evicted.releaseTag), evicted);
+    meta.history = history.slice(-HISTORY_LIMIT);
   }
 
   /** Run `fn` in a transaction only while `holder` still holds a live lease; renew it. */
@@ -620,6 +628,16 @@ export class CoordinatorEngine {
 
   /** Create the GitHub Deployment for a record once; best effort, retried through statuses. */
   private async ensureGitHubDeployment(deploymentId: string): Promise<number | null> {
+    const pending = this.githubCreating.get(deploymentId);
+    if (pending) return pending;
+    const creating = this.createGitHubDeployment(deploymentId).finally(() => {
+      this.githubCreating.delete(deploymentId);
+    });
+    this.githubCreating.set(deploymentId, creating);
+    return creating;
+  }
+
+  private async createGitHubDeployment(deploymentId: string): Promise<number | null> {
     const r = this.record(deploymentId);
     if (!r) return null;
     if (r.githubDeploymentId !== null || !this.d.github) return r.githubDeploymentId;

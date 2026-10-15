@@ -220,7 +220,7 @@ export interface Lease {
 export interface Meta {
   key: string;
   committed: CommittedRelease | null;
-  /** Committed releases, newest last, bounded. Rollback may target any of them. */
+  /** Recent committed releases, newest last, bounded. Durable per-tag entries retain rollback eligibility. */
   history: HistoryEntry[];
   active: string | null;
   next: string | null;

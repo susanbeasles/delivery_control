@@ -248,12 +248,21 @@ terraform {
   assert.doesNotThrow(() => checkEncryption([main, ['encryption.tf', pinned]]));
   // Mentioning the word in a JSON string value is not a declaration.
   assert.doesNotThrow(() => checkEncryption([main, ['encryption.tf', pinned], ['vars.tf.json', '{"variable":{"x":{"description":"state encryption is pinned"}}}']]));
+  for (const doc of [
+    { output: { settings: { value: { encryption: 'enabled' } } } },
+    { variable: { settings: { default: { terraform: { encryption: 'enabled' } } } } },
+    { locals: { encryption: { encryption: true } } },
+    { output: { encryption: { value: 'enabled' } } },
+  ]) {
+    assert.doesNotThrow(() => checkEncryption([main, ['encryption.tf', pinned], ['settings.tf.json', JSON.stringify(doc)]]));
+  }
   const refused: Array<Array<[string, string]>> = [
     [main],
     [main, ['encryption.tf', pinned.replace('enforced = true', 'enforced = false')]],
     [main, ['encryption.tf', pinned.replace('state {\n      method   = method.aes_gcm.state', 'method "unencrypted" "off" {}\n    state {\n      method   = method.unencrypted.off')]],
     [main, ['encryption.tf', pinned], ['override.tf', 'terraform {\n  encryption {\n    state {\n      fallback {\n        method = method.unencrypted.off\n      }\n    }\n  }\n}']],
     [main, ['encryption.tf', pinned], ['x.tf.json', '{"terraform":{"encryption":{}}}']],
+    [main, ['encryption.tf', pinned], ['x.tofu.json', '{"terraform":[{"encryption":{}}]}']],
     [main, ['encryption.tf', pinned], ['override.tf.json', '{"terraform":{"encrypt\\u0069on":{"method":{"unencrypted":{"off":{}}}}}}']],
   ];
   for (const files of refused) {

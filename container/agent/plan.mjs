@@ -353,31 +353,26 @@ export const PINNED_ENCRYPTION = 'terraform{encryption{method"aes_gcm""state"{ke
 const ENCRYPTION_WORD = /(?<![\w])encryption(?![\w])/;
 
 /**
- * Every decoded key of a JSON file. Blocks are keys in Terraform JSON, so an encryption block can
- * only appear as one; `\u0069`-style escapes are gone after decoding. String values (descriptions,
- * outputs) are left out so that mentioning the word is not mistaken for declaring the block.
+ * Only terraform.encryption declares encryption in Terraform JSON. Decode keys before checking
+ * that path, including the array form of blocks; ordinary expression maps may use the same names.
  */
-function decodedJsonKeys(name, text) {
+function jsonDeclaresEncryption(name, text) {
   let doc;
   try {
     doc = JSON.parse(text);
   } catch {
     throw new JobFailure('config_refused', `${name} is not valid JSON`);
   }
-  const parts = [];
-  const walk = (v) => {
-    if (Array.isArray(v)) v.forEach(walk);
-    else if (v !== null && typeof v === 'object') for (const [k, x] of Object.entries(v)) (parts.push(k), walk(x));
-  };
-  walk(doc);
-  return parts.join(' ');
+  const terraform = doc?.terraform;
+  const blocks = Array.isArray(terraform) ? terraform : [terraform];
+  return blocks.some((block) => block !== null && typeof block === 'object' && Object.hasOwn(block, 'encryption'));
 }
 
 export function checkEncryption(files) {
   let pinned = false;
   for (const [name, text] of files) {
-    const code = name.endsWith('.json') ? decodedJsonKeys(name, text) : hclCode(text, name);
-    if (!ENCRYPTION_WORD.test(code)) continue;
+    const declaresEncryption = name.endsWith('.json') ? jsonDeclaresEncryption(name, text) : ENCRYPTION_WORD.test(hclCode(text, name));
+    if (!declaresEncryption) continue;
     if (name !== 'encryption.tf') throw new JobFailure('encryption_config', `${name} declares encryption; only encryption.tf may, and it is pinned`);
     if (hclCode(text, name, false, true).replace(/\s+/g, '') !== PINNED_ENCRYPTION) {
       throw new JobFailure('encryption_config', 'encryption.tf differs from the pinned state and plan encryption');

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CoordinatorEngine } from '../../worker/coordinator/engine.ts';
+import { CoordinatorEngine, type EngineDeps } from '../../worker/coordinator/engine.ts';
 import { createStepRunner, type StepDeps } from '../../worker/coordinator/steps.ts';
 import { MemoryStore } from '../../worker/coordinator/store.ts';
 import { isTerminal, type DeploymentRecord, type PromotionRequest } from '../../worker/coordinator/types.ts';
@@ -47,7 +47,7 @@ function harness(options: { registry?: unknown; environment?: string; script?: s
   };
   const alarms: number[] = [];
   const environment = options.environment ?? 'production';
-  const engine = new CoordinatorEngine({
+  const engineDeps: EngineDeps = {
     store,
     clock,
     key: { application: 'prosrus', environment },
@@ -59,7 +59,8 @@ function harness(options: { registry?: unknown; environment?: string; script?: s
       alarms.push(at);
     },
     environmentUrl: () => ORIGIN,
-  });
+  };
+  const engine = new CoordinatorEngine(engineDeps);
 
   const publish = (release: BuiltRelease) => {
     for (const [name, ref] of Object.entries({ 'release.manifest.json': release.assets.manifest, 'release.zip': release.assets.archive, 'attestation.sigstore.json': release.assets.attestation })) {
@@ -107,7 +108,7 @@ function harness(options: { registry?: unknown; environment?: string; script?: s
     throw new Error(`deployment ${id} did not finish; phase ${record(id).phase}`);
   };
 
-  return { clock, store, staging, releases, state, cf, runner, queue, github, engine, publish, request, admit, record, drive, alarms, tampered, downloads: () => downloads };
+  return { clock, store, staging, releases, state, cf, runner, queue, github, engine, restart: () => new CoordinatorEngine(engineDeps), publish, request, admit, record, drive, alarms, tampered, downloads: () => downloads };
 }
 
 async function deployed(h: ReturnType<typeof harness>, tag: string, options: Parameters<typeof buildRelease>[1] = {}) {
@@ -183,6 +184,43 @@ test('an older release never overtakes a newer one', async () => {
   const older = await buildRelease('v1.1.9');
   h.publish(older);
   assert.deepEqual(await h.admit(h.request(older)), { status: 'REJECTED', error: 'stale_release' });
+});
+
+test('concurrent admissions share one GitHub deployment and its statuses', async () => {
+  const h = harness();
+  const release = await buildRelease('v1.0.0');
+  h.publish(release);
+  const create = h.github.createDeployment;
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+  h.github.createDeployment = async (input) => { await blocked; return create(input); };
+  const first = h.admit(h.request(release));
+  const second = h.admit(h.request(release));
+  unblock();
+  const admissions = await Promise.all([first, second]);
+  assert.equal(admissions[0]!.status, 'QUEUED');
+  assert.deepEqual(admissions[1], admissions[0]);
+  const id = (admissions[0] as { deploymentId: string }).deploymentId;
+  assert.equal((await h.drive(id)).phase, 'SUCCEEDED');
+  assert.equal(h.github.deployments.length, 1, 'no orphan GitHub deployment');
+  assert.ok(h.github.statuses.every((s) => s.id === h.record(id).githubDeploymentId));
+  assert.deepEqual(h.github.statuses.map((s) => s.state), ['queued', 'in_progress', 'success']);
+});
+
+test('rollback can restore a committed release older than the recent history window', async () => {
+  const h = harness();
+  for (let minor = 0; minor < 55; minor++) {
+    assert.equal((await deployed(h, `v1.${minor}.0`)).final.phase, 'SUCCEEDED');
+  }
+  const downloads = h.downloads();
+  const rollback = await h.restart().admit({ ...h.request(await buildRelease('v1.0.0')), intent: 'rollback', assets: null, releaseManifestSha256: null }, 'f'.repeat(64), 'production');
+  assert.equal(rollback.status, 'QUEUED');
+  if (rollback.status !== 'QUEUED') throw new Error('rollback was rejected');
+  const final = await h.drive(rollback.deploymentId);
+  assert.equal(final.phase, 'SUCCEEDED', JSON.stringify(final.lastError));
+  assert.equal(final.generation, 56);
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
+  assert.equal(h.downloads(), downloads, 'rollback uses immutable retained bytes');
 });
 
 test('next in line: newest pending request wins, superseded one ends REJECTED', async () => {
