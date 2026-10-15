@@ -71,7 +71,7 @@ export const FORBIDDEN_SCRIPTS = new Set(['deployer', 'authorizer', 'root-runner
  * the ability to rewrite releases, pointers, state or plans. Application secrets live in their own store.
  */
 export const CONTROL_PLANE_SECRETS_STORE = 'b6504fe2d5f64352954629bc7185fb79';
-export const CONTROL_PLANE_BUCKETS = new Set(['releases', 'release-staging', 'deploy-state', 'runner-logs', 'tf-state', 'tf-state-archive', 'tf-plans', 'tf-plans-root']);
+export const CONTROL_PLANE_BUCKETS = new Set(['releases', 'release-staging', 'deploy-state', 'runner-logs', 'tf-state', 'tf-state-root', 'tf-state-archive', 'tf-plans', 'tf-plans-root']);
 export const CONTROL_PLANE_QUEUES = new Set(['deploy-requests', 'deploy-requests-dlq']);
 /** Plain-text bindings are visible in the dashboard and API; a credential-like name means a secret is in the wrong type. */
 const CREDENTIAL_NAME = /SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|API_KEY|CREDENTIAL/;

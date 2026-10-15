@@ -172,7 +172,8 @@ creates all of it; buckets, queues and the namespace carry `prevent_destroy`):
 | `release-staging` | none | delete after 3 days | deployer |
 | `deploy-state` | indefinite on `ledger/` | none | deployer |
 | `runner-logs` | none | delete after 90 days | deployer, root runner |
-| `tf-state` | none | abort multipart after 1 day | runners through the egress gate |
+| `tf-state` | none | abort multipart after 1 day | `infra` state; deployer runner through the egress gate |
+| `tf-state-root` | none | abort multipart after 1 day | `infra-root` state; root runner only (the deployer's state credential cannot reach it) |
 | `tf-state-archive` | indefinite, whole bucket | none | runners through the egress gate |
 | `tf-plans` | none | delete after 90 days | deployer runner (`infra` plans, stack locks) |
 | `tf-plans-root` | none | delete after 90 days | root runner only (`infra-root` plans, stack lock) |

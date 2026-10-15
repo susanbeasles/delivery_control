@@ -94,7 +94,7 @@ Cloudflare APIs; the acceptance criterion above is asserted step by step, plus i
 Live commissioning, in order, each step with its evidence recorded in the pull request:
 
 1. Seed re-run with the new inventory tokens (`provision/sandbox.sh apply`).
-2. Day-zero apply of `infra-root` from the sandbox (creates `tf-state` first, then imports it;
+2. Day-zero apply of `infra-root` from the sandbox (creates `tf-state-root` and `tf-state` first, then imports them;
    also creates the deploy queue, its DLQ and the registry KV namespace the deployer binds to).
 3. Deployer bootstrap through Workers Builds, or the one-time 24-hour bootstrap token.
 4. `infra` plan and apply through the deployer runner.

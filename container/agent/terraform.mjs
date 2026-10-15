@@ -9,6 +9,7 @@ import {
   CONFIG_FILE,
   checkApplyBinding,
   checkConfigurationText,
+  checkEncryption,
   checkInitializedBackend,
   countChanges,
   encryptionConfig,
@@ -61,14 +62,17 @@ function extract(ctx, name, dest) {
 /** Refuse a stack whose configuration could read the environment (see checkConfigurationText). */
 function checkConfiguration(src) {
   const pending = [src];
+  const files = [];
   while (pending.length > 0) {
     const dir = pending.pop();
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) pending.push(path);
-      else if (CONFIG_FILE.test(entry.name)) checkConfigurationText(relative(src, path), readFileSync(path, 'utf8'));
+      else if (CONFIG_FILE.test(entry.name)) files.push([relative(src, path), readFileSync(path, 'utf8')]);
     }
   }
+  for (const [name, text] of files) checkConfigurationText(name, text);
+  checkEncryption(files);
 }
 
 function extractStack(ctx, dest) {

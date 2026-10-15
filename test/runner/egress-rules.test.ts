@@ -102,13 +102,15 @@ test('terraform.apply: full API, read-write state and lock, create-only archive,
 
 test('root jobs are bound to the infra-root stack', () => {
   check('root.plan', [
-    ['GET', `${R2}/tf-state/infra-root/terraform.tfstate`, 'state-read'],
+    ['GET', `${R2}/tf-state-root/infra-root/terraform.tfstate`, 'state-read'],
+    ['GET', `${R2}/tf-state/infra-root/terraform.tfstate`, null],
     ['GET', `${R2}/tf-state/infra/terraform.tfstate`, null],
     ['POST', 'https://api.cloudflare.com/client/v4/accounts/a/r2/buckets', null],
     ['PUT', `${ART}/summary.json`, 'artifact-put:summary.json'],
   ]);
   check('root.apply', [
-    ['PUT', `${R2}/tf-state/infra-root/terraform.tfstate`, 'state-write'],
+    ['PUT', `${R2}/tf-state-root/infra-root/terraform.tfstate`, 'state-write'],
+    ['PUT', `${R2}/tf-state/infra-root/terraform.tfstate`, null],
     ['PUT', `${R2}/tf-state/infra/terraform.tfstate`, null],
     ['PUT', archive('infra-root', 'after'), 'state-archive'],
     ['PUT', archive('infra', 'after'), null],

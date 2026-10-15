@@ -47,7 +47,11 @@ export interface EgressRule {
 export type QueryRule = 'none' | 'any' | 'object' | 'list';
 
 export const CLOUDFLARE_API_HOST = 'api.cloudflare.com';
-export const STATE_BUCKET = 'tf-state';
+/**
+ * Each stack's state lives in its own bucket, so the deployer's state credential (scoped to
+ * `tf-state`) can never write or delete the root state or its lock in `tf-state-root`.
+ */
+export const STATE_BUCKETS: Readonly<Record<StackName, string>> = { infra: 'tf-state', 'infra-root': 'tf-state-root' };
 export const ARCHIVE_BUCKET = 'tf-state-archive';
 
 /** Artifact names a plan job may write, with their size limits. */
@@ -79,11 +83,12 @@ export function rulesFor(ctx: EgressContext): EgressRule[] {
   if (profile.cloudflare === null || profile.state === null || ctx.stack === null || ctx.treeSha === null) return [];
   const rules: EgressRule[] = [];
   const r2 = r2Host(ctx.accountId);
-  const state = `/${STATE_BUCKET}/${stateKey(ctx.stack)}`;
+  const bucket = STATE_BUCKETS[ctx.stack];
+  const state = `/${bucket}/${stateKey(ctx.stack)}`;
 
   rules.push({ name: 'cloudflare-api', kind: 'cloudflare-api', host: CLOUDFLARE_API_HOST, methods: profile.cloudflare.methods, paths: [], query: 'any' });
   // `tofu init` lists workspaces under the default `env:` prefix; nothing is stored there.
-  rules.push({ name: 'state-workspaces', kind: 'r2-state', host: r2, methods: ['GET'], paths: [`/${STATE_BUCKET}`, `/${STATE_BUCKET}/`], query: 'list' });
+  rules.push({ name: 'state-workspaces', kind: 'r2-state', host: r2, methods: ['GET'], paths: [`/${bucket}`, `/${bucket}/`], query: 'list' });
   if (profile.state.access === 'read') {
     rules.push({ name: 'state-read', kind: 'r2-state', host: r2, methods: ['GET', 'HEAD'], paths: [state], query: 'object' });
   } else {

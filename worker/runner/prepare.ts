@@ -1,7 +1,7 @@
 import { fail } from '../lib/errors.ts';
 import type { Json } from '../lib/json.ts';
 import type { ReleaseVerifyInput, RunnerJobRequest } from './api.ts';
-import { ARCHIVE_BUCKET, STATE_BUCKET, archiveKey, planObjectKey, r2Host, stateKey } from './egress/rules.ts';
+import { ARCHIVE_BUCKET, STATE_BUCKETS, archiveKey, planObjectKey, r2Host, stateKey } from './egress/rules.ts';
 import type { InputFile } from './framing.ts';
 import { branchHead, commitTree, downloadTarball, type SourceDeps } from './github-source.ts';
 import { ARTIFACT_HOST, LIMITS } from './limits.ts';
@@ -141,7 +141,7 @@ function common(subject: TerraformSubject, accountId: string): Record<string, Js
 
 /** What the agent writes into its backend config file; the gate enforces the same bucket and key. */
 export function backendConfig(stack: StackName, accountId: string): { bucket: string; key: string; endpoint: string } {
-  return { bucket: STATE_BUCKET, key: stateKey(stack), endpoint: `https://${r2Host(accountId)}` };
+  return { bucket: STATE_BUCKETS[stack], key: stateKey(stack), endpoint: `https://${r2Host(accountId)}` };
 }
 
 /** Plans bind to trees; the subject's tree must be the commit's real tree, observed independently. */

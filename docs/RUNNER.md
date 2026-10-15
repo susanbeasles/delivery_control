@@ -70,7 +70,7 @@ exact staged digests, repository, source commit, signer workflow and a ref of `m
   the runner's backend file, refuses any backend other than our s3 bucket and key, reads state
   serial and lineage, runs `tofu plan -lock=false -out plan.tfplan`, re-reads serial and lineage
   (must be unchanged), renders `tofu show -json`, **redacts every value the plan marks sensitive**,
-  runs `conftest test --all-namespaces --policy <infra-root main>/policy` (the invocation `scripts/policy-check.sh` tests, and a run that evaluates no rule is a `policy_error`) on the redacted plan with a
+  refuses stack configuration that could read the environment (`config_refused`) or that changes the pinned `encryption.tf` (`encryption_config`), then runs `conftest test --all-namespaces --policy <infra-root main>/policy` (the invocation `scripts/policy-check.sh` tests, and a run that evaluates no rule is a `policy_error`) on the redacted plan with a
   top-level `stack` field, and uploads `plan.tfplan`, `plan.json`, then `summary.json` (last, so it
   marks a complete plan) to `tf-plans/{stack}/{treeSha}/`.
   - Why `-lock=false`: a plan never writes state, so plan jobs hold no write credential at all, and a
@@ -106,7 +106,7 @@ Containers start with the internet disabled; every HTTP and HTTPS request to any
 | Job type | `api.cloudflare.com` | R2 S3 `<ACCOUNT_ID>.r2.cloudflarestorage.com` (path style) | `artifacts.runner.internal` |
 |---|---|---|---|
 | `release.verify` | denied | denied | denied (no egress at all) |
-| `terraform.plan`, `root.plan` | `GET`, `HEAD` on `/client/v4/…` | `GET`/`HEAD` `tf-state/{stack}/terraform.tfstate`; `GET tf-state?list-type=2&prefix=env:/` | `PUT /plan.tfplan`, `/plan.json`, `/summary.json` → `tf-plans/{stack}/{treeSha}/…`, create-only |
+| `terraform.plan`, `root.plan` | `GET`, `HEAD` on `/client/v4/…` | `GET`/`HEAD` `<state>/{stack}/terraform.tfstate`; `GET <state>?list-type=2&prefix=env:/` (`<state>` is `tf-state` for `infra`, `tf-state-root` for `infra-root`) | `PUT /plan.tfplan`, `/plan.json`, `/summary.json` → `tf-plans/{stack}/{treeSha}/…`, create-only |
 | `terraform.apply`, `root.apply` | all methods on `/client/v4/…` | as plan, plus `PUT` state; `GET/HEAD/PUT/DELETE` `….tflock`; `PUT tf-state-archive/{stack}/{treeSha}/{jobId}/{before,after}.tfstate` (gate forces `if-none-match: *`) | `GET /plan.tfplan` from `tf-plans/{stack}/{treeSha}/` |
 
 For every allowed request the gate keeps only a per-destination header allowlist (the container's
@@ -163,8 +163,8 @@ with a pasted token.
   2. Compare `tf-state-archive/<stack>/<tree>/<jobId>/before.tfstate` with `after.tfstate` (if
      present) and the current state; run a fresh plan for the current `main` through the normal PR
      path to see what remains.
-  3. If a state lock object remains (`tf-state/<stack>/terraform.tfstate.tflock`) and no apply is
-     running, remove it: `wrangler r2 object delete tf-state/<stack>/terraform.tfstate.tflock --remote`.
+  3. If a state lock object remains (`<state>/<stack>/terraform.tfstate.tflock`, `<state>` as above) and no apply is
+     running, remove it: `wrangler r2 object delete <state>/<stack>/terraform.tfstate.tflock --remote`.
   4. Remove the stack lock: `wrangler r2 object delete <plans>/locks/<stack>.json --remote`.
   5. Applies resume with the next reviewed plan.
 - **Stale or incomplete plan** (`state_serial_changed`, `plan_incomplete`): delete the three objects

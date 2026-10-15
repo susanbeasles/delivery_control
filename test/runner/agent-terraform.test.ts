@@ -5,6 +5,7 @@ import {
   backendConfigFile,
   checkApplyBinding,
   checkConfigurationText,
+  checkEncryption,
   checkInitializedBackend,
   countChanges,
   encryptionConfig,
@@ -217,4 +218,36 @@ test('configuration that can read the filesystem is refused before tofu runs', (
     'variable "file_name" { type = string }',
   ];
   for (const text of allowed) checkConfigurationText('main.tf', text);
+});
+
+test('encryption.tf is pinned: no weaker method, no fallback, no second declaration', () => {
+  const pinned = `# comments may change
+terraform {
+  encryption {
+    method "aes_gcm" "state" {
+      keys = key_provider.pbkdf2.state
+    }
+    state {
+      method   = method.aes_gcm.state
+      enforced = true
+    }
+    plan {
+      method   = method.aes_gcm.state
+      enforced = true
+    }
+  }
+}
+`;
+  const main: [string, string] = ['main.tf', 'resource "terraform_data" "x" {}'];
+  assert.doesNotThrow(() => checkEncryption([main, ['encryption.tf', pinned]]));
+  const refused: Array<Array<[string, string]>> = [
+    [main],
+    [main, ['encryption.tf', pinned.replace('enforced = true', 'enforced = false')]],
+    [main, ['encryption.tf', pinned.replace('state {\n      method   = method.aes_gcm.state', 'method "unencrypted" "off" {}\n    state {\n      method   = method.unencrypted.off')]],
+    [main, ['encryption.tf', pinned], ['override.tf', 'terraform {\n  encryption {\n    state {\n      fallback {\n        method = method.unencrypted.off\n      }\n    }\n  }\n}']],
+    [main, ['encryption.tf', pinned], ['x.tf.json', '{"terraform":{"encryption":{}}}']],
+  ];
+  for (const files of refused) {
+    assert.throws(() => checkEncryption(files), (e: any) => e.code === 'encryption_config', files.map((f) => f[0]).join(','));
+  }
 });

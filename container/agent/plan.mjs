@@ -10,6 +10,8 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const UUIDV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const STACKS = new Set(['infra', 'infra-root']);
+/** Mirrors worker/runner/egress/rules.ts STATE_BUCKETS: one state bucket per stack. */
+const STATE_BUCKETS = { infra: 'tf-state', 'infra-root': 'tf-state-root' };
 const ENDPOINT = /^https:\/\/[a-f0-9]{32}\.r2\.cloudflarestorage\.com$/;
 const PASSPHRASE = /^[A-Za-z0-9_-]{32,128}$/;
 const LINEAGE = /^[A-Za-z0-9-]{1,64}$/;
@@ -25,7 +27,7 @@ function exact(value, keys, what) {
 
 function backend(value, stack) {
   const b = exact(value, ['bucket', 'key', 'endpoint'], 'input.backend');
-  if (b.bucket !== 'tf-state' || b.key !== `${stack}/terraform.tfstate` || !ENDPOINT.test(b.endpoint)) throw invalid('input.backend is not this stack\'s state');
+  if (b.bucket !== STATE_BUCKETS[stack] || b.key !== `${stack}/terraform.tfstate` || !ENDPOINT.test(b.endpoint)) throw invalid('input.backend is not this stack\'s state');
   return b;
 }
 
@@ -249,7 +251,7 @@ const FORBIDDEN_NAME = /(?<![\w])(?:file(?:base64(?:sha256|sha512)?|md5|sha1|sha
 const unterminated = (name, what) => new JobFailure('config_refused', `${name} has an unterminated ${what}`);
 
 /** Code text of HCL source (or of one template string when `template` is set), comments and literals blanked. */
-export function hclCode(src, name, template = false) {
+export function hclCode(src, name, template = false, keepStrings = false) {
   let out = '';
   let i = 0;
   const stack = [template ? { kind: 'template' } : { kind: 'code', depth: 0 }];
@@ -274,7 +276,7 @@ export function hclCode(src, name, template = false) {
         out += ' ';
       } else if (c === '"') {
         stack.push({ kind: 'string' });
-        out += ' ';
+        out += keepStrings ? '"' : ' ';
         i += 1;
       } else if (c === '<' && next === '<' && /^<<-?[A-Za-z_][\w-]*\r?\n/.test(src.slice(i, i + 260))) {
         const m = /^<<-?([A-Za-z_][\w-]*)\r?\n/.exec(src.slice(i, i + 260));
@@ -311,11 +313,12 @@ export function hclCode(src, name, template = false) {
       i += 2;
     } else if (top.kind === 'string' && c === '"') {
       stack.pop();
-      out += ' ';
+      out += keepStrings ? '"' : ' ';
       i += 1;
     } else if (top.kind === 'string' && c === '\n') {
       throw unterminated(name, 'string');
     } else {
+      if (keepStrings) out += c;
       i += 1;
     }
   }
@@ -349,4 +352,28 @@ export function checkConfigurationText(name, text) {
     const match = FORBIDDEN_NAME.exec(code);
     if (match) throw new JobFailure('config_refused', `${name} uses ${match[0] === '::' ? 'a provider-defined function' : match[0]}, which can read the runner's environment`);
   }
+}
+
+/**
+ * State and plan encryption is configured by the stack's `encryption.tf`, which a pull request could
+ * weaken (an `unencrypted` method, a fallback, `enforced = false`) before any policy sees the plan;
+ * `tofu show -json` does not record it. So the block is pinned here: `encryption.tf` at the stack
+ * root must have exactly this code (comments and whitespace aside) and no other file may declare
+ * encryption. Changing it is a reviewed change to the runner.
+ */
+export const PINNED_ENCRYPTION = 'terraform{encryption{method"aes_gcm""state"{keys=key_provider.pbkdf2.state}state{method=method.aes_gcm.stateenforced=true}plan{method=method.aes_gcm.stateenforced=true}}}';
+const ENCRYPTION_WORD = /(?<![\w])encryption(?![\w])/;
+
+export function checkEncryption(files) {
+  let pinned = false;
+  for (const [name, text] of files) {
+    const code = name.endsWith('.json') ? text : hclCode(text, name);
+    if (!ENCRYPTION_WORD.test(code)) continue;
+    if (name !== 'encryption.tf') throw new JobFailure('encryption_config', `${name} declares encryption; only encryption.tf may, and it is pinned`);
+    if (hclCode(text, name, false, true).replace(/\s+/g, '') !== PINNED_ENCRYPTION) {
+      throw new JobFailure('encryption_config', 'encryption.tf differs from the pinned state and plan encryption');
+    }
+    pinned = true;
+  }
+  if (!pinned) throw new JobFailure('encryption_config', 'the stack has no encryption.tf; state and plans must be encrypted');
 }
