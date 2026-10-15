@@ -352,8 +352,12 @@ export function checkConfigurationText(name, text) {
 export const PINNED_ENCRYPTION = 'terraform{encryption{method"aes_gcm""state"{keys=key_provider.pbkdf2.state}state{method=method.aes_gcm.stateenforced=true}plan{method=method.aes_gcm.stateenforced=true}}}';
 const ENCRYPTION_WORD = /(?<![\w])encryption(?![\w])/;
 
-/** Every key and string of a JSON file, decoded, so `\u0069`-style escapes cannot hide a word. */
-function decodedJsonText(name, text) {
+/**
+ * Every decoded key of a JSON file. Blocks are keys in Terraform JSON, so an encryption block can
+ * only appear as one; `\u0069`-style escapes are gone after decoding. String values (descriptions,
+ * outputs) are left out so that mentioning the word is not mistaken for declaring the block.
+ */
+function decodedJsonKeys(name, text) {
   let doc;
   try {
     doc = JSON.parse(text);
@@ -362,8 +366,7 @@ function decodedJsonText(name, text) {
   }
   const parts = [];
   const walk = (v) => {
-    if (typeof v === 'string') parts.push(v);
-    else if (Array.isArray(v)) v.forEach(walk);
+    if (Array.isArray(v)) v.forEach(walk);
     else if (v !== null && typeof v === 'object') for (const [k, x] of Object.entries(v)) (parts.push(k), walk(x));
   };
   walk(doc);
@@ -373,7 +376,7 @@ function decodedJsonText(name, text) {
 export function checkEncryption(files) {
   let pinned = false;
   for (const [name, text] of files) {
-    const code = name.endsWith('.json') ? decodedJsonText(name, text) : hclCode(text, name);
+    const code = name.endsWith('.json') ? decodedJsonKeys(name, text) : hclCode(text, name);
     if (!ENCRYPTION_WORD.test(code)) continue;
     if (name !== 'encryption.tf') throw new JobFailure('encryption_config', `${name} declares encryption; only encryption.tf may, and it is pinned`);
     if (hclCode(text, name, false, true).replace(/\s+/g, '') !== PINNED_ENCRYPTION) {

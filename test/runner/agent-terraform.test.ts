@@ -246,6 +246,8 @@ terraform {
 `;
   const main: [string, string] = ['main.tf', 'resource "terraform_data" "x" {}'];
   assert.doesNotThrow(() => checkEncryption([main, ['encryption.tf', pinned]]));
+  // Mentioning the word in a JSON string value is not a declaration.
+  assert.doesNotThrow(() => checkEncryption([main, ['encryption.tf', pinned], ['vars.tf.json', '{"variable":{"x":{"description":"state encryption is pinned"}}}']]));
   const refused: Array<Array<[string, string]>> = [
     [main],
     [main, ['encryption.tf', pinned.replace('enforced = true', 'enforced = false')]],
