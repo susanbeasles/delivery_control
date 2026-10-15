@@ -174,7 +174,8 @@ creates all of it; buckets, queues and the namespace carry `prevent_destroy`):
 | `runner-logs` | none | delete after 90 days | deployer, root runner |
 | `tf-state` | none | abort multipart after 1 day | runners through the egress gate |
 | `tf-state-archive` | indefinite, whole bucket | none | runners through the egress gate |
-| `tf-plans` | none | delete after 90 days | runners |
+| `tf-plans` | none | delete after 90 days | deployer runner (`infra` plans, stack locks) |
+| `tf-plans-root` | none | delete after 90 days | root runner only (`infra-root` plans, stack lock) |
 
 | Other resource | Name | Notes |
 |---|---|---|
@@ -206,6 +207,7 @@ Secrets Store `control-plane` (values minted by `infra-root/provision`, never by
 | `R2_STATE_RW` | deployer | Bucket Item Write on `tf-state`, `tf-plans`, `tf-state-archive` |
 | `TF_ENCRYPTION_INFRA` | deployer | generated passphrase |
 | `WORKER_<NAME>` | deployer | Workers Scripts Edit. Cloudflare most likely cannot scope this to one script (VERIFY); the deployer only ever addresses the registry's script for that target, and the registry forbids control-plane script names. Per-target tokens still give separate revocation and audit. |
+| `CF_ROOT_PLAN` | root runner | reads of everything `infra-root` manages, for `root.plan` |
 | `CF_ROOT_APPLY`, `R2_STATE_ROOT`, `TF_ENCRYPTION_ROOT`, `CF_SECRETS_WRITE` | root runner | R2 admin, queues edit, Workers KV namespaces edit, Zero Trust org, Secrets Store write. `TF_ENCRYPTION_ROOT` is generated once by `infra-root/bootstrap/day-zero.sh`. |
 
 ## 8. Operational invariants and where they are enforced

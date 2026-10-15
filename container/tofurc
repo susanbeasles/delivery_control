@@ -1,0 +1,9 @@
+# OpenTofu CLI configuration for the runner (TF_CLI_CONFIG_FILE). Providers come only from the
+# image's filesystem mirror; there is no `direct {}` block, so nothing is ever downloaded at run
+# time and a configuration naming any other provider fails at `tofu init`.
+provider_installation {
+  filesystem_mirror {
+    path    = "/opt/runner/providers"
+    include = ["registry.opentofu.org/cloudflare/cloudflare"]
+  }
+}

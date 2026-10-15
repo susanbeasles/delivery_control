@@ -1,6 +1,7 @@
 // The deployer Worker. No route, no custom domain, no workers.dev: it is reachable only through the
 // authorizer's service binding and its own queue. Resource lifecycle belongs to Terraform
-// (infra-root buckets, infra queues and KV); this file only binds to those resources by name.
+// (infra-root: buckets, queues, the registry namespace; infra: the consumer and the registry value);
+// this file only binds to those resources by name.
 // Values marked COMMISSIONING are filled from Terraform outputs and the seed log at commissioning;
 // `npm run check:config` refuses to pass while any remains.
 {
@@ -19,7 +20,9 @@
     // COMMISSIONING: Cloudflare token ids (not values) of the R2 state tokens, from the seed log.
     // The R2 S3 access key id is the token id; the secret is derived from the bound value.
     "R2_STATE_RO_TOKEN_ID": "",
-    "R2_STATE_RW_TOKEN_ID": ""
+    "R2_STATE_RW_TOKEN_ID": "",
+    // The runner code is shared with the root runner; this Worker may only run infra and release jobs.
+    "RUNNER_ROLE": "deployer"
   },
   "durable_objects": {
     "bindings": [
@@ -46,7 +49,7 @@
     { "binding": "TF_PLANS", "bucket_name": "tf-plans" }
   ],
   "kv_namespaces": [
-    // COMMISSIONING: infra output `deploy_registry_namespace_id`.
+    // COMMISSIONING: infra-root output `deploy_registry_namespace_id`.
     { "binding": "REGISTRY", "id": "COMMISSIONING_deploy_registry_namespace_id" }
   ],
   "queues": {

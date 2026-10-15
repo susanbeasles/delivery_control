@@ -10,6 +10,7 @@
   "scripts": {
     "test": "node --test --test-reporter=dot \"test/worker/**/*.test.ts\" \"test/runner/**/*.test.ts\" \"test/clients/**/*.test.ts\"",
     "typecheck": "wrangler types --include-runtime=true --strict-vars=false worker-configuration.d.ts >/dev/null && tsc --noEmit -p tsconfig.json",
-    "check:config": "node scripts/check-config.mjs"
+    "check:config": "node scripts/check-config.mjs",
+    "test:e2e": "node --test --test-reporter=spec test/e2e/push-to-main.test.ts"
   }
 }
