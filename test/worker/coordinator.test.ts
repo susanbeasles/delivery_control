@@ -441,6 +441,32 @@ test('a pointer changed behind our back is refused before anything is deployed',
   assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0', 'production was never touched');
 });
 
+test('a pointer that keeps the deployment id but edits any other field is refused', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  const current = h.state.objects.get('pointers/prosrus/production/current.json')!;
+  const doc = JSON.parse(new TextDecoder().decode(current.bytes));
+  current.bytes = new TextEncoder().encode(JSON.stringify({ ...doc, generation: doc.generation + 5 }));
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
+});
+
+test('a pointer that exists before any release is committed is refused', async () => {
+  const h = harness();
+  const release = await buildRelease('v1.0.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  await h.state.put('pointers/prosrus/production/current.json', '{"deploymentId":null}');
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+});
+
 test('a missing pointer while a release is committed is refused before anything is deployed', async () => {
   const h = harness();
   await deployed(h, 'v1.0.0');

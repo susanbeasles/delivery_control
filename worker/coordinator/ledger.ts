@@ -64,16 +64,27 @@ export function pointerDocument(application: string, environment: string, c: Com
  * coordinator believes is committed (restored from backup, edited by hand, storage reset). The
  * swap at commit time checks again, but by then production has already changed.
  */
-export async function checkCurrentPointer(bucket: R2Bucket, application: string, environment: string, expectedDeploymentId: string | null): Promise<void> {
+export async function checkCurrentPointer(bucket: R2Bucket, application: string, environment: string, committed: CommittedRelease | null): Promise<void> {
   const key = pointerKey(application, environment, 'current');
   const existing = await bucket.get(key);
   if (existing === null) {
-    if (expectedDeploymentId !== null) fail('pointer_conflict', `${key} is missing but deployment ${expectedDeploymentId} is committed`);
+    if (committed !== null) fail('pointer_conflict', `${key} is missing but deployment ${committed.deploymentId} is committed`);
     return;
   }
-  const doc = parseStrictJsonBytes(new Uint8Array(await existing.arrayBuffer()), 256 * 1024, 'pointer_invalid') as Json;
-  const current = doc !== null && typeof doc === 'object' && !Array.isArray(doc) ? doc['deploymentId'] : undefined;
-  if (current !== expectedDeploymentId) fail('pointer_conflict', `${key} names ${String(current)}, but ${String(expectedDeploymentId)} is committed`);
+  // Nothing committed means no pointer may exist; otherwise the whole document must be exactly the one
+  // the last commit wrote, so an edited generation, release or target list is caught as well.
+  if (committed === null) fail('pointer_conflict', `${key} exists but no release is committed`);
+  const stored = parseStrictJsonBytes(new Uint8Array(await existing.arrayBuffer()), 256 * 1024, 'pointer_invalid') as Json;
+  const expected = pointerDocument(application, environment, committed);
+  if (!bytesEqual(canonicalBytes(stored), canonicalBytes(expected))) {
+    fail('pointer_conflict', `${key} differs from the committed deployment ${committed.deploymentId}`);
+  }
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /**

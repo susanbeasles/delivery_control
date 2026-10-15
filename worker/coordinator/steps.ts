@@ -323,7 +323,7 @@ async function plan(deps: StepDeps, ctx: StepContext): Promise<StepResult> {
     fail('stale_generation', 'the environment changed since this request was made');
   }
   // A diverged pointer is refused here, while nothing has been deployed, not at the commit.
-  await checkCurrentPointer(deps.state, r.application, r.environment, committed?.deploymentId ?? null);
+  await checkCurrentPointer(deps.state, r.application, r.environment, committed ?? null);
   const manifest = await loadManifest(deps, r, app, env);
   const manifestSha256 = r.requestedManifestSha256;
   if (manifestSha256 === null) return fail('internal', 'planning without a verified manifest digest');
