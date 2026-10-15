@@ -1,0 +1,25 @@
+{
+  "name": "@susanbeasles/runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private runner library: a controller Durable Object that leases one Cloudflare Container per job, delivers the job envelope on stdin, captures logs to R2, enforces a hard timeout with an independent watchdog, destroys the container before the lease is released and records an outcome that is never retried when uncertain.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./durable-object": "./src/durable-object.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "check": "npm run -s typecheck && npm run -s test"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261015.1",
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  }
+}
