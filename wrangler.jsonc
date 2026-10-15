@@ -1,0 +1,67 @@
+// The deployer Worker. No route, no custom domain, no workers.dev: it is reachable only through the
+// authorizer's service binding and its own queue. Resource lifecycle belongs to Terraform
+// (infra-root buckets, infra queues and KV); this file only binds to those resources by name.
+// Values marked COMMISSIONING are filled from Terraform outputs and the seed log at commissioning;
+// `npm run check:config` refuses to pass while any remains.
+{
+  "name": "deployer",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "limits": { "cpu_ms": 60000 },
+  "vars": {
+    "ACCOUNT_ID": "1a799c6e699d2ef7e87398692ce3ad7b",
+    "GITHUB_OWNER_ID": "215839550",
+    // COMMISSIONING: numeric id of the `deployer` GitHub App.
+    "GITHUB_APP_ID": "0",
+    // COMMISSIONING: Cloudflare token ids (not values) of the R2 state tokens, from the seed log.
+    // The R2 S3 access key id is the token id; the secret is derived from the bound value.
+    "R2_STATE_RO_TOKEN_ID": "",
+    "R2_STATE_RW_TOKEN_ID": ""
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "COORDINATOR", "class_name": "Coordinator" },
+      { "name": "RUNNER", "class_name": "RunnerJob" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Coordinator", "RunnerJob"] }],
+  // Durable Object-managed container: each RunnerJob starts its own instance with
+  // ctx.container.start({ image: ctx.container.images.runner, instance: "standard-1", ... }).
+  // Wrangler builds the Dockerfile and pushes a digest-pinned image to the account registry.
+  "containers": [
+    {
+      "class_name": "RunnerJob",
+      "scheduling_policy": "durable_object",
+      "images": { "runner": { "dockerfile": "./container/Dockerfile", "build_context": "./container" } }
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "RELEASES", "bucket_name": "releases" },
+    { "binding": "STAGING", "bucket_name": "release-staging" },
+    { "binding": "STATE", "bucket_name": "deploy-state" },
+    { "binding": "RUNNER_LOGS", "bucket_name": "runner-logs" },
+    { "binding": "TF_PLANS", "bucket_name": "tf-plans" }
+  ],
+  "kv_namespaces": [
+    // COMMISSIONING: infra output `deploy_registry_namespace_id`.
+    { "binding": "REGISTRY", "id": "COMMISSIONING_deploy_registry_namespace_id" }
+  ],
+  "queues": {
+    // The consumer attachment (batch size, retries, DLQ) is declared in infra Terraform.
+    "producers": [{ "binding": "DEPLOY_QUEUE", "queue": "deploy-requests" }]
+  },
+  "services": [{ "binding": "AUTHORIZER", "service": "authorizer", "entrypoint": "Authorizer" }],
+  "secrets_store_secrets": [
+    { "binding": "GITHUB_APP_KEY", "store_id": "b6504fe2d5f64352954629bc7185fb79", "secret_name": "DEPLOYER_GITHUB_APP_KEY" },
+    { "binding": "CF_PLAN", "store_id": "b6504fe2d5f64352954629bc7185fb79", "secret_name": "CF_PLAN" },
+    { "binding": "CF_APPLY", "store_id": "b6504fe2d5f64352954629bc7185fb79", "secret_name": "CF_APPLY" },
+    { "binding": "R2_STATE_RO", "store_id": "b6504fe2d5f64352954629bc7185fb79", "secret_name": "R2_STATE_RO" },
+    { "binding": "R2_STATE_RW", "store_id": "b6504fe2d5f64352954629bc7185fb79", "secret_name": "R2_STATE_RW" },
+    { "binding": "TF_ENCRYPTION_INFRA", "store_id": "b6504fe2d5f64352954629bc7185fb79", "secret_name": "TF_ENCRYPTION_INFRA" }
+    // Per-target deploy credentials are appended here at enrollment, one per registry target:
+    // { "binding": "WORKER_<NAME>", "store_id": "…", "secret_name": "WORKER_<NAME>" }
+  ]
+}
