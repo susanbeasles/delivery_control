@@ -6,6 +6,7 @@ import {
   checkApplyBinding,
   checkConfigurationText,
   checkEncryption,
+  PINNED_ENCRYPTION,
   checkInitializedBackend,
   countChanges,
   encryptionConfig,
@@ -131,9 +132,11 @@ test('backend and encryption configuration', () => {
   assert.match(file, /^use_path_style = true$/m);
   assert.match(file, /^skip_s3_checksum = true$/m);
   assert.match(file, /^access_key = "signed-by-egress-gate"$/m);
+  // Only the key provider is injected, under the name the pinned encryption.tf and day-zero use.
   const enc = encryptionConfig(PASSPHRASE);
-  assert.match(enc, /enforced = true/);
-  assert.match(enc, /^plan \{$/m);
+  assert.match(enc, /^key_provider "pbkdf2" "state" \{$/m);
+  assert.doesNotMatch(enc, /method|enforced|^state|^plan/m);
+  assert.ok(PINNED_ENCRYPTION.includes('keys=key_provider.pbkdf2.state'));
   assert.throws(() => encryptionConfig('short'), { code: 'passphrase_invalid' });
   assert.throws(() => encryptionConfig('a"; } evil { x = "' + 'a'.repeat(40)), { code: 'passphrase_invalid' });
   assert.throws(() => encryptionConfig(null), { code: 'passphrase_invalid' });
@@ -198,6 +201,8 @@ test('configuration that can read the filesystem is refused before tofu runs', (
     'output "x" { value = "${filebase64("/proc/self/environ")}" }',
     'locals { s = <<EOT\n${file("/proc/self/environ")}\nEOT\n}',
     'output "x" { value = provider /* x */ :: cloudflare :: f("a") }',
+    // A false, indented terminator does not end a plain `<<EOT` heredoc; HCL keeps reading.
+    'locals { s = <<EOT\n  EOT\n# ${file("/proc/self/environ")}\nEOT\n}',
   ]) {
     assert.throws(() => checkConfigurationText('main.tf', text), (e: any) => e.code === 'config_refused', text);
   }
@@ -215,6 +220,7 @@ test('configuration that can read the filesystem is refused before tofu runs', (
     '/* file("/x") */ locals { note = "reads a file(/x) and fe80::1" }',
     'resource "cloudflare_dns_record" "a" { content = "100::" }',
     'locals { s = <<-EOT\n  the file() function is not called here: $${file("x")}\n  EOT\n}',
+    'locals { s = <<EOT\nplain text\nEOT\n}',
     'variable "file_name" { type = string }',
   ];
   for (const text of allowed) checkConfigurationText('main.tf', text);
@@ -246,6 +252,7 @@ terraform {
     [main, ['encryption.tf', pinned.replace('state {\n      method   = method.aes_gcm.state', 'method "unencrypted" "off" {}\n    state {\n      method   = method.unencrypted.off')]],
     [main, ['encryption.tf', pinned], ['override.tf', 'terraform {\n  encryption {\n    state {\n      fallback {\n        method = method.unencrypted.off\n      }\n    }\n  }\n}']],
     [main, ['encryption.tf', pinned], ['x.tf.json', '{"terraform":{"encryption":{}}}']],
+    [main, ['encryption.tf', pinned], ['override.tf.json', '{"terraform":{"encrypt\\u0069on":{"method":{"unencrypted":{"off":{}}}}}}']],
   ];
   for (const files of refused) {
     assert.throws(() => checkEncryption(files), (e: any) => e.code === 'encryption_config', files.map((f) => f[0]).join(','));

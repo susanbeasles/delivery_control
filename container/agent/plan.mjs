@@ -83,28 +83,14 @@ export function backendConfigFile(b) {
 }
 
 /**
- * `TF_ENCRYPTION` for tofu child processes only: state and plan encryption enforced with a
- * PBKDF2-derived AES-GCM key. The passphrase is base64url (validated), so it is HCL-safe.
+ * `TF_ENCRYPTION` for tofu child processes only: just the key provider. The stack's pinned
+ * `encryption.tf` (PINNED_ENCRYPTION) declares the method and enforces state and plan encryption
+ * with `key_provider.pbkdf2.state`, the same name day-zero uses; the name is recorded in the state's
+ * metadata, so it must never change. The passphrase is base64url (validated), so it is HCL-safe.
  */
 export function encryptionConfig(passphrase) {
   if (typeof passphrase !== 'string' || !PASSPHRASE.test(passphrase)) throw new JobFailure('passphrase_invalid', 'state passphrase is missing or malformed');
-  return [
-    'key_provider "pbkdf2" "runner" {',
-    `  passphrase = "${passphrase}"`,
-    '}',
-    'method "aes_gcm" "runner" {',
-    '  keys = key_provider.pbkdf2.runner',
-    '}',
-    'state {',
-    '  method   = method.aes_gcm.runner',
-    '  enforced = true',
-    '}',
-    'plan {',
-    '  method   = method.aes_gcm.runner',
-    '  enforced = true',
-    '}',
-    '',
-  ].join('\n');
+  return ['key_provider "pbkdf2" "state" {', `  passphrase = "${passphrase}"`, '}', ''].join('\n');
 }
 
 /** Terraform's convention: a replacement counts as one add and one destroy. */
@@ -279,8 +265,9 @@ export function hclCode(src, name, template = false, keepStrings = false) {
         out += keepStrings ? '"' : ' ';
         i += 1;
       } else if (c === '<' && next === '<' && /^<<-?[A-Za-z_][\w-]*\r?\n/.test(src.slice(i, i + 260))) {
-        const m = /^<<-?([A-Za-z_][\w-]*)\r?\n/.exec(src.slice(i, i + 260));
-        stack.push({ kind: 'heredoc', marker: m[1] });
+        const m = /^<<(-?)([A-Za-z_][\w-]*)\r?\n/.exec(src.slice(i, i + 260));
+        // `<<EOT` ends only at a line that is exactly `EOT`; `<<-EOT` allows leading whitespace.
+        stack.push({ kind: 'heredoc', marker: m[2], indented: m[1] === '-' });
         out += ' ';
         i += m[0].length;
       } else if (c === '}' && top.depth === 0 && stack.length > 1) {
@@ -299,7 +286,8 @@ export function hclCode(src, name, template = false, keepStrings = false) {
     if (top.kind === 'heredoc' && (i === 0 || src[i - 1] === '\n')) {
       const end = src.indexOf('\n', i);
       const line = src.slice(i, end === -1 ? src.length : end);
-      if (line.trim() === top.marker) {
+      const candidate = (top.indented ? line.replace(/^[ \t]+/, '') : line).replace(/[ \t]*\r?$/, '');
+      if (candidate === top.marker) {
         stack.pop();
         i += line.length;
         continue;
@@ -364,10 +352,28 @@ export function checkConfigurationText(name, text) {
 export const PINNED_ENCRYPTION = 'terraform{encryption{method"aes_gcm""state"{keys=key_provider.pbkdf2.state}state{method=method.aes_gcm.stateenforced=true}plan{method=method.aes_gcm.stateenforced=true}}}';
 const ENCRYPTION_WORD = /(?<![\w])encryption(?![\w])/;
 
+/** Every key and string of a JSON file, decoded, so `\u0069`-style escapes cannot hide a word. */
+function decodedJsonText(name, text) {
+  let doc;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    throw new JobFailure('config_refused', `${name} is not valid JSON`);
+  }
+  const parts = [];
+  const walk = (v) => {
+    if (typeof v === 'string') parts.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v !== null && typeof v === 'object') for (const [k, x] of Object.entries(v)) (parts.push(k), walk(x));
+  };
+  walk(doc);
+  return parts.join(' ');
+}
+
 export function checkEncryption(files) {
   let pinned = false;
   for (const [name, text] of files) {
-    const code = name.endsWith('.json') ? text : hclCode(text, name);
+    const code = name.endsWith('.json') ? decodedJsonText(name, text) : hclCode(text, name);
     if (!ENCRYPTION_WORD.test(code)) continue;
     if (name !== 'encryption.tf') throw new JobFailure('encryption_config', `${name} declares encryption; only encryption.tf may, and it is pinned`);
     if (hclCode(text, name, false, true).replace(/\s+/g, '') !== PINNED_ENCRYPTION) {
