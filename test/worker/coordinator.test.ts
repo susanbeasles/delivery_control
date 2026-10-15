@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { DeployError } from '../../worker/lib/errors.ts';
 import assert from 'node:assert/strict';
 import { CoordinatorEngine, type EngineDeps } from '../../worker/coordinator/engine.ts';
 import { createStepRunner, type StepDeps } from '../../worker/coordinator/steps.ts';
@@ -427,7 +428,7 @@ test('rollback intent redeploys a previously committed release from the immutabl
   assert.deepEqual(unknown, { status: 'REJECTED', error: 'not_previously_deployed' });
 });
 
-test('a pointer changed behind our back stops the commit for a human', async () => {
+test('a pointer changed behind our back is refused before anything is deployed', async () => {
   const h = harness();
   await deployed(h, 'v1.0.0');
   const release = await buildRelease('v1.1.0');
@@ -436,8 +437,108 @@ test('a pointer changed behind our back stops the commit for a human', async () 
   const current = h.state.objects.get('pointers/prosrus/production/current.json')!;
   current.bytes = new TextEncoder().encode(JSON.stringify({ deploymentId: 'someone-else' }));
   const final = await h.drive(admission.deploymentId);
-  assert.equal(final.phase, 'RECOVERY_FAILED');
+  assert.equal(final.phase, 'REJECTED');
   assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0', 'production was never touched');
+});
+
+test('a pointer that keeps the deployment id but edits any other field is refused', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  const current = h.state.objects.get('pointers/prosrus/production/current.json')!;
+  const doc = JSON.parse(new TextDecoder().decode(current.bytes));
+  current.bytes = new TextEncoder().encode(JSON.stringify({ ...doc, generation: doc.generation + 5 }));
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
+});
+
+test('a crash after the pointer write keeps record and pointer identical, so later releases still deploy', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const original = h.state.put.bind(h.state);
+  let crashed = false;
+  (h.state as any).put = async (key: string, value: unknown, options?: any) => {
+    const result = await original(key, value, options);
+    if (!crashed && key === 'pointers/prosrus/production/current.json') {
+      crashed = true;
+      throw new DeployError('r2_unavailable', 'worker died after the pointer write', { retryable: true });
+    }
+    return result;
+  };
+  const second = await deployed(h, 'v1.1.0');
+  assert.ok(crashed);
+  assert.equal(second.final.phase, 'SUCCEEDED');
+  const third = await deployed(h, 'v1.2.0');
+  assert.equal(third.final.phase, 'SUCCEEDED', String(third.final.lastError?.code));
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.2.0');
+});
+
+test('an unreadable pointer is refused as pointer_conflict before anything is deployed', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  h.state.objects.get('pointers/prosrus/production/current.json')!.bytes = new TextEncoder().encode('{not json');
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
+});
+
+test('a pointer edited after planning is caught again at the commit, not overwritten', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  // The first read of current.json is the planning check; edit the pointer right after it, so the
+  // edit lands while targets deploy and only the commit-time swap can see it.
+  const key = 'pointers/prosrus/production/current.json';
+  const original = h.state.get.bind(h.state);
+  let reads = 0;
+  let doc: any;
+  (h.state as any).get = async (k: string, options?: any) => {
+    const result = await original(k, options);
+    if (k === key && ++reads === 1) {
+      const current = h.state.objects.get(key)!;
+      doc = JSON.parse(new TextDecoder().decode(current.bytes));
+      current.bytes = new TextEncoder().encode(JSON.stringify({ ...doc, generation: doc.generation + 1 }));
+    }
+    return result;
+  };
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+  assert.notEqual(final.phase, 'SUCCEEDED');
+  assert.equal(JSON.parse(new TextDecoder().decode(h.state.objects.get('pointers/prosrus/production/current.json')!.bytes)).generation, doc.generation + 1, 'the edited pointer was not overwritten');
+});
+
+test('a pointer that exists before any release is committed is refused', async () => {
+  const h = harness();
+  const release = await buildRelease('v1.0.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  await h.state.put('pointers/prosrus/production/current.json', '{"deploymentId":null}');
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(final.lastError?.code, 'pointer_conflict');
+});
+
+test('a missing pointer while a release is committed is refused before anything is deployed', async () => {
+  const h = harness();
+  await deployed(h, 'v1.0.0');
+  const release = await buildRelease('v1.1.0');
+  h.publish(release);
+  const admission = (await h.admit(h.request(release))) as any;
+  h.state.objects.delete('pointers/prosrus/production/current.json');
+  const final = await h.drive(admission.deploymentId);
+  assert.equal(final.phase, 'REJECTED');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
 });
 
 test('the deadline turns a stuck deployment into a terminal state', async () => {

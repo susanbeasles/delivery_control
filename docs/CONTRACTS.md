@@ -472,6 +472,12 @@ pointers/{application}/{environment}/promote.json                   # in-flight 
 }
 ```
 
+`current.json` must be exactly the document the last commit wrote (compared canonically, every field),
+and must not exist before the first commit. This is checked when a
+deployment is planned, before any target changes: a pointer that is missing, edited or restored
+from elsewhere ends the deployment `REJECTED` with `pointer_conflict` and nothing deployed. The
+swap at commit checks again (etag compare-and-swap) for a change during the deployment.
+
 ## 9. Queue `deploy-requests`
 
 Message body, at-least-once, no secrets, idempotent on `(deploymentId, kick)`:

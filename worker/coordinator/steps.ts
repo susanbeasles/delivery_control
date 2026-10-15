@@ -21,7 +21,7 @@ import {
 } from '../release/service.ts';
 import type { ReleaseVerifyInput, RunnerJobRequest, RunnerJobStatus } from '../runner/api.ts';
 import type { StepContext, StepResult, StepRunner } from './engine.ts';
-import { pointerDocument, pointerKey, putPointer, swapCurrentPointer } from './ledger.ts';
+import { checkCurrentPointer, pointerDocument, pointerKey, putPointer, swapCurrentPointer } from './ledger.ts';
 import { ASSET_NAMES, type AssetName, type CommittedRelease, type DeploymentRecord, type HealthProgress, type Phase, type Plan, type StagedFile, type TargetPlan } from './types.ts';
 
 /**
@@ -322,6 +322,8 @@ async function plan(deps: StepDeps, ctx: StepContext): Promise<StepResult> {
   if (r.expectedCurrentGeneration !== null && r.expectedCurrentGeneration !== (committed?.generation ?? 0)) {
     fail('stale_generation', 'the environment changed since this request was made');
   }
+  // A diverged pointer is refused here, while nothing has been deployed, not at the commit.
+  await checkCurrentPointer(deps.state, r.application, r.environment, committed ?? null);
   const manifest = await loadManifest(deps, r, app, env);
   const manifestSha256 = r.requestedManifestSha256;
   if (manifestSha256 === null) return fail('internal', 'planning without a verified manifest digest');
@@ -452,7 +454,9 @@ async function commit(deps: StepDeps, ctx: StepContext): Promise<StepResult> {
     targets,
     committedAt: isoAt(deps.clock.now()),
   };
-  await swapCurrentPointer(deps.state, r.application, r.environment, p.expectedPriorDeploymentId, pointerDocument(r.application, r.environment, committed));
+  const stored = await swapCurrentPointer(deps.state, r.application, r.environment, previous ?? null, pointerDocument(r.application, r.environment, committed));
+  // A retry after a crash keeps the timestamp the first attempt wrote, so record and pointer match.
+  committed.committedAt = stored.committedAt;
   if (previous) {
     try {
       await putPointer(deps.state, pointerKey(r.application, r.environment, 'rollback'), pointerDocument(r.application, r.environment, previous));
