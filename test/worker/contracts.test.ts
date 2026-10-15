@@ -91,4 +91,13 @@ test('registry: valid, and every guard fires', () => {
   assert.throws(() => parseRegistry(mutate((d) => target(d).bindings.push({ name: 'DB', type: 'plain_text', text: 'x' }))), /duplicate/);
   assert.throws(() => parseRegistry(mutate((d) => (target(d).credential = 'CF_APPLY'))), code('registry_invalid'));
   assert.throws(() => parseRegistry(mutate((d) => d.applications.push(structuredClone(d.applications[0])))), /duplicate/);
+  for (const binding of [
+    { name: 'LEDGER', type: 'durable_object_namespace', class_name: 'TokenLedger', script_name: 'authorizer' },
+    { name: 'AUTHZ', type: 'service', service: 'authorizer', entrypoint: 'Authorizer' },
+    { name: 'DEPLOY', type: 'service', service: 'deployer' },
+    { name: 'ROOT', type: 'service', service: 'root-runner', entrypoint: 'RootRunner' },
+  ]) {
+    assert.throws(() => parseRegistry(mutate((d) => target(d).bindings.push(binding))), /control-plane Workers/, binding.name);
+  }
+  assert.doesNotThrow(() => parseRegistry(mutate((d) => target(d).bindings.push({ name: 'OWN_DO', type: 'durable_object_namespace', class_name: 'Sessions' }))));
 });

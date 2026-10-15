@@ -188,6 +188,13 @@ function parseBinding(raw: unknown, path: string): ApiBinding {
     if (!pattern) fail(CODE, `${path}.${field}: no validation rule`);
     out[field] = b.string(field, pattern, 1024);
   }
+  // Application code must never reach into the control plane: a service binding to the authorizer's
+  // `Authorizer` entrypoint could burn grants, and a Durable Object binding with
+  // `script_name: authorizer` could mint them. The authorizer's public HTTPS endpoint remains usable.
+  const reached = type === 'service' ? out['service'] : type === 'durable_object_namespace' ? out['script_name'] : undefined;
+  if (reached !== undefined && FORBIDDEN_SCRIPTS.has(reached)) {
+    fail(CODE, `${path}: bindings to control-plane Workers (${reached}) are not allowed`);
+  }
   return out;
 }
 

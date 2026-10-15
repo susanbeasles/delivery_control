@@ -171,8 +171,12 @@ Content-Type: application/json
 
 - `intent` is `deploy` (the default flow on push to `main`) or `rollback` (an explicit,
   owner-dispatched redeploy of an older release).
-- Responses never redirect. Errors are `403` with `{"error":"<stable code>"}`; see the
-  authorizer README for the full list. Success is `202`:
+- Responses never redirect. Errors are JSON `{"error":"<code>"}` with `cache-control: no-store`:
+  `400 bad_request`; `403` with a refusal code (`bad_sig`, `bad_iss`, `bad_aud`, `expired`,
+  `bad_owner`, `bad_repo`, `bad_workflow`, `bad_env`, `bad_ref`, `bad_event`, `bad_subject`,
+  `bad_action`, `replay`, `no_evidence`); `404 not_found`; `409 {"error":"rejected","reason":"<code>"}`
+  for a final admission rejection; `503 unavailable` for a transient failure (retry with a fresh
+  OIDC token). Success is `202`:
 
 ```json
 {"status":"QUEUED","deploymentId":"<uuidv7>","githubDeploymentId":123456}
@@ -218,11 +222,34 @@ request body except fields the policy then checked.
 For `intent: "rollback"`, `assets` may be `null`: a rollback can only target a release the deployer
 has already ingested and previously committed.
 
+### 3.1 `terraform-subject/v1` (authorizer → deployer or root runner)
+
+```json
+{
+  "schema": "terraform-subject/v1",
+  "operation": "plan",
+  "stack": "infra",
+  "repository": "susanbeasles/infra",
+  "repositoryId": 1417590199,
+  "pullRequest": 42,
+  "commit": "<40 hex>",
+  "treeSha": "<40 hex>",
+  "headSha": "<40 hex>",
+  "requestedBy": { "…": "as in deploy-subject/v1" }
+}
+```
+
+For a plan, `commit` is the pull request's merge commit and `headSha` the head it was built from.
+For an apply, `commit` is the head of `main` (the squash merge of `pullRequest`). Plans are stored and
+looked up by `treeSha`, because the promoter's squash merge changes the commit but not the tree.
+Stack `infra` runs in the deployer with grant actions `infra.plan`/`infra.apply`; stack
+`infra-root` runs in the root runner with `root.plan`/`root.apply`.
+
 ## 4. Service-binding RPC
 
 All internal calls are Worker RPC over service bindings. No component has a route to another.
 
-### 4.1 Authorizer entrypoint `Authorizer` (bound in the deployer as `AUTHORIZER`)
+### 4.1 Authorizer entrypoint `Authorizer` (bound in the deployer and the root runner as `AUTHORIZER`)
 
 ```ts
 consume(input: { tokenHash: string; action: string; subject: unknown }): Promise<
@@ -231,22 +258,30 @@ consume(input: { tokenHash: string; action: string; subject: unknown }): Promise
 >
 ```
 
-Atomic delete-and-return in the `TokenLedger` Durable Object. `subject` is compared by canonical
-digest. A second call for the same hash returns `replay`.
+Atomic delete-and-return in the `TokenLedger` Durable Object. `tokenHash` is the lowercase hex
+SHA-256 of the UTF-8 bytes of the token string (base64url, 43 characters). `subject` is compared by
+canonical digest. A second call for the same hash returns `replay`; a malformed request returns
+`unknown` and burns nothing; a mismatched action or subject returns `mismatch` and burns the grant.
+The grant's action is the request action: `deploy` for both intents, `infra.plan`/`infra.apply`
+for stack `infra`, `root.plan`/`root.apply` for stack `infra-root`.
 
 ### 4.2 Deployer entrypoint `Deployer` (bound in the authorizer as `DEPLOYER`)
 
 ```ts
 admit(input: { token: string; subject: DeploySubjectV1 }): Promise<AdmissionResult>
 status(input: { application: string; environment: string; deploymentId: string }): Promise<StatusResult>
-runJob(input: { token: string; job: RunnerJobRequest }): Promise<RunnerJobStatus>  // terraform.plan / terraform.apply
+runJob(input: { token: string; job: { type: "terraform.plan" | "terraform.apply"; subject: TerraformSubjectV1 } }): Promise<RunnerJobStatus>
 jobStatus(input: { jobId: string }): Promise<RunnerJobStatus>
 
 type AdmissionResult =
   | { status: "QUEUED"; deploymentId: string; githubDeploymentId: number | null }
   | { status: "ALREADY_CURRENT"; deploymentId: string; githubDeploymentId: null }
-  | { status: "REJECTED"; error: string }
+  | { status: "REJECTED"; error: string; retryable?: boolean }
 ```
+
+The authorizer answers `503 unavailable` for `registry_unavailable` and `internal` and `409` for
+every other `REJECTED` error. `RunnerJobStatus` is defined in `worker/runner/api.ts`; the root
+runner exposes the same `runJob`/`jobStatus` on its entrypoint `RootRunner`.
 
 The deployer hashes `token`, calls `AUTHORIZER.consume` with the action and subject, and acts only
 on `ok: true`. The grant is consumed before any other check, so a request that is rejected later
@@ -305,10 +340,14 @@ validates it fatally, and refuses to act on anything it does not list.
 }
 ```
 
+- `revision` strictly increases on every change to the document (enforced by policy P13 and
+  recorded on each deployment).
 - Binding types allowed: `plain_text`, `d1`, `kv_namespace`, `r2_bucket`, `service` (optional
   `entrypoint`), `queue` (`queue_name`), `secrets_store_secret`, `durable_object_namespace`
   (`class_name`, optional `script_name`), `version_metadata`. Names follow
-  `^[A-Z][A-Z0-9_]{0,63}$` and `DEPLOY_*` is reserved.
+  `^[A-Z][A-Z0-9_]{0,63}$` and `DEPLOY_*` is reserved. A `service` or `durable_object_namespace`
+  binding may never reach `deployer`, `authorizer` or `root-runner`: application code must not be
+  able to call the control plane's private entrypoints or its ledger.
 - `keepBindings` is a subset of `["secret_text","secret_key"]`.
 - `credential` names a Secrets Store binding **on the deployer Worker** that holds that target's
   token (Workers Scripts Edit). The deployer fails closed if the binding is missing. VERIFY whether
@@ -450,8 +489,11 @@ Job types and inputs:
 
 - `release.verify`: `{ repository, sourceCommit, releaseTag, signerWorkflow, files: [{ name, sha256, size }] }`.
   Files follow the envelope on stdin, length-prefixed in the order listed.
-- `terraform.plan`: `{ stack: "infra" | "infra-root", repository, repositoryId, commit, pullRequest }`.
-- `terraform.apply`: `{ stack, repository, repositoryId, commit, planKey, planSha256, stateSerial, stateLineage }`.
+- `terraform.plan` / `terraform.apply` (deployer, stack `infra`) and `root.plan` / `root.apply`
+  (root runner, stack `infra-root`): the `terraform-subject/v1` from section 3.1. The runner adds
+  the repository tarball at `commit` and the policy bundle from `infra-root` `main` on stdin; an
+  apply finds its plan under `tf-plans/{stack}/{treeSha}/` and refuses unless the plan's SHA-256,
+  state serial and lineage still match.
 
 The agent writes exactly one JSON result document to stdout (at most 256 KiB) and logs to stderr.
 Exit code 0 means the result document is authoritative; any other exit or a missing or invalid

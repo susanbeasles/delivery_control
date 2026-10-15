@@ -77,14 +77,16 @@ npm run check:config  # fails until every commissioning value is set
 In order, each with its evidence in the pull request (details in
 [docs/IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md)):
 
-1. `infra-root` applied: buckets, locks, lifecycle. The seed has minted the runner tokens.
-2. `infra` applied: queue, DLQ, registry KV. Put its `deploy_registry_namespace_id` output in
-   `wrangler.jsonc`.
+1. Seed re-run with the Phase 1 token inventory (`infra-root/provision`).
+2. Day-zero apply of `infra-root` from the sandbox (`infra-root/bootstrap/day-zero.sh`): buckets,
+   locks, lifecycle, the `deploy-requests` queue and DLQ, the `deploy-registry` KV namespace. Put
+   its `deploy_registry_namespace_id` output in `wrangler.jsonc`.
 3. Create the `deployer` GitHub App (contents read, deployments write, checks write), land its key
    in Secrets Store as `DEPLOYER_GITHUB_APP_KEY`, set `GITHUB_APP_ID`. Set the R2 token ids.
 4. Produce and review the trusted root for `release.verify` (see docs/RUNNER.md).
 5. `npm run check:config`, then deploy through Workers Builds or the one-time bootstrap.
-6. Apply the `infra` queue consumer (`deployer_deployed = true`).
+6. First `infra` plan and apply through this runner: registry value, queue consumer
+   (`deployer_deployed = true`), authorizer edge (`authorizer_deployed = true`).
 7. Enroll an application: registry entry, `WORKER_<NAME>` token and binding, authorizer policy.
 
 ## Legacy

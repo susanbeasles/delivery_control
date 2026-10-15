@@ -65,8 +65,9 @@ validator forbids those script names.
 
 1. **Admission.** The only public surface is `POST /v1/token`. It authenticates GitHub's OIDC token
    in the Worker, not with a Cloudflare Access service token, because a service token would have to
-   live in GitHub and GitHub holds no secrets. All other paths return 404. A WAF rate limit fronts
-   the hostname.
+   live in GitHub and GitHub holds no secrets. This replaces the spec's "service-auth only" line for
+   `services.susanb.dev` (ADR 0001). All other paths are blocked at the edge and return 404 from
+   the Worker. A WAF rate limit fronts the hostname.
 2. **Decision versus execution.** The authorizer decides and the deployer executes. The deployer has
    no route; it is reachable only through service bindings that exist only in reviewed Worker
    configuration. Even a forged binding cannot act: every job must consume a live, unconsumed
@@ -141,24 +142,29 @@ policy, digest-pinned image in the Cloudflare registry, no route).
    result is `uncertain`, which blocks further applies on that stack until a human resolves it.
 
 Job types: `release.verify` (offline `gh attestation verify` against the pinned trusted root, no
-egress at all), `terraform.plan`, `terraform.apply` (deployer), and `root.plan`, `root.apply`
-(root runner only).
+egress at all), `terraform.plan`, `terraform.apply` (deployer, stack `infra`), and `root.plan`,
+`root.apply` (root runner only, stack `infra-root`). Both runners receive
+`{ type: "terraform.plan" | "terraform.apply", subject: terraform-subject/v1 }`; the grant's action
+says which stack it was minted for.
 
 ## 6. Terraform flow
 
 - `terraform.plan` runs for a pull request on the merge commit. Policy (rego under
   `infra-root/policy`) is always taken from `infra-root` `main`, never from the pull request. The
   plan, its JSON rendering, its SHA-256 and the state serial and lineage go to `tf-plans` under
-  `{stack}/{commit}/`. A check run reports add, change and destroy counts and every policy result.
-- `terraform.apply` accepts only a stored plan whose commit is the merged commit, whose SHA-256
+  `{stack}/{treeSha}/` (the promoter's squash merge changes the commit, not the tree). Plans run
+  with `-lock=false` and read-only state credentials. A check run reports add, change and destroy counts and every policy result.
+- `terraform.apply` accepts only a stored plan for the tree of the head of `main`, whose SHA-256
   matches, and whose state serial and lineage are unchanged. It archives state to `tf-state-archive`
   (locked) before and after, then records a GitHub Deployment.
-- Terraform owns every resource. The deployer never creates, deletes or edits a Terraform-managed
-  resource; its tokens cannot (Workers Scripts Edit on named scripts only).
+- Terraform owns every resource except application Worker scripts. The deployer creates a target's
+  script on first deploy and uploads versions after that (ADR 0006); it never creates, deletes or
+  edits a Terraform-managed resource.
 
 ## 7. Resource inventory
 
-Created by `infra-root` (root token, buckets carry `prevent_destroy`):
+Created by `infra-root` (root token; everything the deployer binds to, so the day-zero apply
+creates all of it; buckets, queues and the namespace carry `prevent_destroy`):
 
 | Bucket | Lock | Lifecycle | Used by |
 |---|---|---|---|
@@ -170,14 +176,23 @@ Created by `infra-root` (root token, buckets carry `prevent_destroy`):
 | `tf-state-archive` | indefinite, whole bucket | none | runners through the egress gate |
 | `tf-plans` | none | delete after 90 days | runners |
 
-Created by `infra`:
+| Other resource | Name | Notes |
+|---|---|---|
+| Queue | `deploy-requests` | wake-up kicks for coordinators |
+| Queue | `deploy-requests-dlq` | alert on depth > 0 |
+| KV namespace | `deploy-registry` | holds the registry value written by `infra` |
+
+Created by `infra` (applied through the deployer's runner):
 
 | Resource | Name | Notes |
 |---|---|---|
-| Queue | `deploy-requests` | consumer `deployer`, batch 1, 5 retries, 30 s delay, DLQ below |
-| Queue | `deploy-requests-dlq` | alert on depth > 0 |
-| KV namespace | `deploy-registry` | key `registry`, value is `deploy-registry/v1` |
-| Custom domain | `services.susanb.dev` → `authorizer` | WAF rate limit, every path but `/v1/token` blocked at the edge |
+| Queue consumer | `deploy-requests` → `deployer` | batch 1, 5 retries, 30 s delay, DLQ; applied once the deployer exists |
+| KV value | `deploy-registry` / `registry` | `deploy-registry/v1`, `revision` strictly increasing |
+| Custom domain | `services.susanb.dev` → `authorizer` | applied once the authorizer exists |
+| Rulesets | zone `susanb.dev` | block everything but `POST /v1/token`; rate limit 10 per 10 s per IP |
+
+Created by the deployer: application Worker scripts listed in the registry (never by Terraform;
+rego P7 forbids Worker code resources in any plan).
 
 Secrets Store `control-plane` (values minted by `infra-root/provision`, never by Terraform):
 
@@ -186,11 +201,12 @@ Secrets Store `control-plane` (values minted by `infra-root/provision`, never by
 | `AUTHORIZER_GITHUB_APP_KEY` | authorizer | App `authorizer`: contents, checks, pull requests, attestations read |
 | `DEPLOYER_GITHUB_APP_KEY` | deployer, root runner | App `deployer`: contents read, deployments write, checks write |
 | `CF_PLAN` | deployer | account and zone reads for plans |
-| `CF_APPLY` | deployer | DNS, Access, routes, queues, KV, notifications edit; no R2 admin, no Workers Scripts, no members, no tokens |
-| `R2_STATE_RO`, `R2_STATE_RW` | deployer | Object read, read/write on `tf-state` and `tf-plans`; write on `tf-state-archive` |
+| `CF_APPLY` | deployer | DNS, Access, routes and custom domains (VERIFY permission), queue consumers, Workers KV Storage Edit (registry value), zone WAF edit, notifications; no R2 admin, no Workers Scripts, no members, no tokens |
+| `R2_STATE_RO` | deployer | Bucket Item Read on `tf-state` (plans run with `-lock=false`; plan files go through the Worker's `TF_PLANS` binding) |
+| `R2_STATE_RW` | deployer | Bucket Item Write on `tf-state`, `tf-plans`, `tf-state-archive` |
 | `TF_ENCRYPTION_INFRA` | deployer | generated passphrase |
-| `WORKER_<NAME>` | deployer | Workers Scripts Edit on one script |
-| `CF_ROOT_APPLY`, `R2_STATE_ROOT`, `TF_ENCRYPTION_ROOT`, `CF_SECRETS_WRITE` | root runner | R2 admin, Zero Trust org, Secrets Store write |
+| `WORKER_<NAME>` | deployer | Workers Scripts Edit. Cloudflare most likely cannot scope this to one script (VERIFY); the deployer only ever addresses the registry's script for that target, and the registry forbids control-plane script names. Per-target tokens still give separate revocation and audit. |
+| `CF_ROOT_APPLY`, `R2_STATE_ROOT`, `TF_ENCRYPTION_ROOT`, `CF_SECRETS_WRITE` | root runner | R2 admin, queues edit, Workers KV namespaces edit, Zero Trust org, Secrets Store write. `TF_ENCRYPTION_ROOT` is generated once by `infra-root/bootstrap/day-zero.sh`. |
 
 ## 8. Operational invariants and where they are enforced
 
