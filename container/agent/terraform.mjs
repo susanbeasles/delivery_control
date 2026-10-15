@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { JobFailure, fail } from './errors.mjs';
 import { request } from './http.mjs';
 import { baseToolEnv } from './paths.mjs';
 import {
   backendConfigFile,
+  CONFIG_FILE,
   checkApplyBinding,
+  checkConfigurationText,
   checkInitializedBackend,
   countChanges,
   encryptionConfig,
@@ -56,6 +58,25 @@ function extract(ctx, name, dest) {
   return dest;
 }
 
+/** Refuse a stack whose configuration could read the environment (see checkConfigurationText). */
+function checkConfiguration(src) {
+  const pending = [src];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (CONFIG_FILE.test(entry.name)) checkConfigurationText(relative(src, path), readFileSync(path, 'utf8'));
+    }
+  }
+}
+
+function extractStack(ctx, dest) {
+  const src = extract(ctx, 'source.tar.gz', dest);
+  checkConfiguration(src);
+  return src;
+}
+
 async function init(ctx, src, input) {
   const file = join(ctx.workdir, 'backend.tfbackend');
   writeFileSync(file, backendConfigFile(input.backend), { mode: 0o600 });
@@ -83,7 +104,7 @@ export async function runPlan(ctx) {
   const input = validatePlanInput(ctx.envelope.input);
   const out = join(ctx.workdir, 'out');
   mkdirSync(out, { mode: 0o700 });
-  const src = extract(ctx, 'source.tar.gz', join(ctx.workdir, 'src'));
+  const src = extractStack(ctx, join(ctx.workdir, 'src'));
   const policyRepo = extract(ctx, 'policy.tar.gz', join(ctx.workdir, 'policy-repo'));
   const policyDir = join(policyRepo, input.policyDirectory);
   if (!existsSync(policyDir) || !lstatSync(policyDir).isDirectory()) fail('policy_missing', `infra-root main has no ${input.policyDirectory}/ directory`);
@@ -108,7 +129,7 @@ export async function runPlan(ctx) {
   const policyInput = join(out, 'policy-input.json');
   writeFileSync(policyInput, JSON.stringify({ ...redacted, stack: input.stack }), { mode: 0o600 });
 
-  const conftest = await runTool(ctx.paths.conftest, ['test', '--no-color', '--output', 'json', '--policy', policyDir, '--namespace', 'main', policyInput], {
+  const conftest = await runTool(ctx.paths.conftest, ['test', '--no-color', '--output', 'json', '--policy', policyDir, '--all-namespaces', policyInput], {
     cwd: out,
     env: baseToolEnv(ctx),
     deadlineMs: ctx.deadlineMs,
@@ -159,7 +180,7 @@ export async function runApply(ctx) {
   const input = validateApplyInput(ctx.envelope.input, ctx.envelope.jobId);
   const out = join(ctx.workdir, 'out');
   mkdirSync(out, { mode: 0o700 });
-  const src = extract(ctx, 'source.tar.gz', join(ctx.workdir, 'src'));
+  const src = extractStack(ctx, join(ctx.workdir, 'src'));
   await init(ctx, src, input);
 
   const plan = await request(`${input.artifactsOrigin}/plan.tfplan`, { maxBytes: 64 * MiB });

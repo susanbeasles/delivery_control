@@ -32,7 +32,16 @@ test('a GitHub-style archive extracts with the top directory stripped and symlin
   assert.equal(ops.at(-1), 'symlink');
 });
 
+test('pax paths are measured in bytes: multi-byte names extract intact', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'runner-tar-'));
+  const dest = join(dir, 'src');
+  const name = `${'é'.repeat(60)}-ü/main.tf`;
+  extractTarball(tarGz([...base, { path: 'ignored', pax: { path: `${ROOT}/${name}` }, data: 'pax' }]), dest, 1024 * 1024);
+  assert.equal(readFileSync(join(dest, name), 'utf8'), 'pax');
+});
+
 const unsafe: Array<[string, TarEntry[]]> = [
+  ['control character', [...base, { path: 'ignored', pax: { path: `${ROOT}/main.tf\n` }, data: 'x' }]],
   ['absolute path', [{ path: '/etc/passwd', data: 'x' }]],
   ['parent segment', [...base, { path: `${ROOT}/../escape.tf`, data: 'x' }]],
   ['dot segment', [...base, { path: `${ROOT}/./a.tf`, data: 'x' }]],

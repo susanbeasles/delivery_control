@@ -232,3 +232,37 @@ export function checkInitializedBackend(dataDirState, b) {
     throw new JobFailure('backend_mismatch', 'the configuration does not use the runner\'s s3 state backend');
   }
 }
+
+/**
+ * The state passphrase is in every tofu process's environment, and a plan runs code from a pull
+ * request. OpenTofu reaches the filesystem only through these functions (there is no `env()`), so a
+ * configuration that names one could read `/proc/self/environ` and smuggle the passphrase into a
+ * plan output. Neither stack needs them; any configuration file that names one, or a provider-defined
+ * function, is refused before tofu starts. Comments count too: refusing is cheaper than parsing.
+ */
+export const CONFIG_FILE = /\.(?:tf|tofu)(?:\.json)?$/;
+const FILESYSTEM_ACCESS = /\b(?:file(?:base64(?:sha256|sha512)?|md5|sha1|sha256|sha512|exists|set)?|templatefile|templatestring|abspath|pathexpand)\s*\(|provider::/;
+
+export function checkConfigurationText(name, text) {
+  // JSON syntax hides expressions behind escapes ("${fil\u0065(...)}"), so its decoded strings,
+  // keys included, are what gets checked; an unparsable file is refused rather than skipped.
+  const texts = [text];
+  if (name.endsWith('.json')) {
+    let doc;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      throw new JobFailure('config_refused', `${name} is not valid JSON`);
+    }
+    const walk = (v) => {
+      if (typeof v === 'string') texts.push(v);
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (v !== null && typeof v === 'object') for (const [k, x] of Object.entries(v)) (texts.push(k), walk(x));
+    };
+    walk(doc);
+  }
+  for (const t of texts) {
+    const match = FILESYSTEM_ACCESS.exec(t);
+    if (match) throw new JobFailure('config_refused', `${name} uses ${match[0].replace(/\s*\($/, '()')}, which can read the runner's environment`);
+  }
+}

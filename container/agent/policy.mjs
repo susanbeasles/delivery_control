@@ -50,6 +50,10 @@ export function parseConftestOutput(text) {
     for (const item of file.warnings ?? []) add(item, 'warn');
     for (const item of file.skipped ?? []) add(item, 'skip');
   }
+  // A policy directory whose rules were never evaluated (wrong namespace, empty directory) would
+  // otherwise read as a pass. Nothing evaluated is an error, never an approval.
+  const evaluated = passes + doc.reduce((n, f) => n + (f.failures?.length ?? 0) + (f.exceptions?.length ?? 0) + (f.warnings?.length ?? 0), 0);
+  if (evaluated === 0) throw new JobFailure('policy_error', 'conftest evaluated no policy rule');
   const results = [...rules.values()].sort((a, b) => SEVERITY[b.result] - SEVERITY[a.result] || a.rule.localeCompare(b.rule)).slice(0, MAX_RULES - 1);
   if (passes > 0) results.push({ rule: '*', result: 'pass', messages: [`${passes} policy checks passed`] });
   // Exceptions are denials a policy explicitly excused; only failures fail the plan.

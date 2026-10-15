@@ -4,6 +4,7 @@ import {
   SENSITIVE,
   backendConfigFile,
   checkApplyBinding,
+  checkConfigurationText,
   checkInitializedBackend,
   countChanges,
   encryptionConfig,
@@ -148,7 +149,7 @@ test('conftest results: per-rule entries, worst result wins, passes aggregated',
   const output = JSON.stringify([
     {
       filename: 'policy-input.json',
-      namespace: 'main',
+      namespace: 'p1',
       successes: 10,
       failures: [{ msg: 'P1: plan deletes protected bucket releases' }, { msg: 'P1: plan replaces tf-state' }, { msg: 'unnamed failure' }],
       warnings: [{ msg: 'P2: three deletes', metadata: { details: { rule: 'P2' } } }],
@@ -169,4 +170,33 @@ test('conftest results: per-rule entries, worst result wins, passes aggregated',
   assert.equal(clean.passed, true);
   assert.deepEqual(clean.results, [{ rule: '*', result: 'pass', messages: ['4 policy checks passed'] }]);
   assert.throws(() => parseConftestOutput('{'), { code: 'policy_error' });
+  // `--namespace main` against packages p1..p13 evaluates nothing; that must never read as a pass.
+  assert.throws(() => parseConftestOutput(JSON.stringify([{ filename: 'x', namespace: 'main', successes: 0, failures: [] }])), { code: 'policy_error' });
+  assert.throws(() => parseConftestOutput('[]'), { code: 'policy_error' });
+});
+
+test('configuration that can read the filesystem is refused before tofu runs', () => {
+  const refused = [
+    'output "x" { value = file("/proc/self/environ") }',
+    'locals { e = filebase64 ( "/proc/1/environ" ) }',
+    '{"output":{"x":{"value":"${templatefile(\\"/etc/passwd\\", {})}"}}}',
+    'output "x" { value = fileset("/", "**") }',
+    'output "x" { value = provider::cloudflare::anything("a") }',
+    'output "x" { value = abspath(".") }',
+  ];
+  for (const text of refused) {
+    assert.throws(() => checkConfigurationText('main.tf', text), (e: any) => e.code === 'config_refused', text);
+  }
+  // JSON escapes hide the name from a raw-text scan; the decoded strings and keys are checked.
+  const escaped = '{"output":{"x":{"value":"${fil\\u0065(\\"/proc/self/environ\\")}"}}}';
+  assert.doesNotThrow(() => JSON.parse(escaped));
+  assert.throws(() => checkConfigurationText('main.tf.json', escaped), (e: any) => e.code === 'config_refused');
+  assert.throws(() => checkConfigurationText('x.tf.json', '{"locals":{"\\u0066ile(\\"/x\\")":1}}'), (e: any) => e.code === 'config_refused');
+  assert.throws(() => checkConfigurationText('x.tf.json', '{'), (e: any) => e.code === 'config_refused');
+  const allowed = [
+    'resource "cloudflare_workers_kv" "registry" { key_name = "registry" value = jsonencode(local.doc) }',
+    'locals { profile = "x" }  # mentions profile( and filesystem but no call',
+    'variable "file_name" { type = string }',
+  ];
+  for (const text of allowed) checkConfigurationText('main.tf', text);
 });

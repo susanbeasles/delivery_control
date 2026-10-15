@@ -64,6 +64,18 @@ export interface Registry {
 const CODE = 'registry_invalid';
 export const MAX_REGISTRY_BYTES = 512 * 1024;
 export const FORBIDDEN_SCRIPTS = new Set(['deployer', 'authorizer', 'root-runner']);
+/**
+ * Control-plane resources application code may never bind: the Secrets Store holding the deployer's
+ * and runners' credentials, every bucket of the deploy estate, and the deploy queues. A binding is
+ * uploaded with the application's code, so any of these would hand release code root credentials or
+ * the ability to rewrite releases, pointers, state or plans. Application secrets live in their own store.
+ */
+export const CONTROL_PLANE_SECRETS_STORE = 'b6504fe2d5f64352954629bc7185fb79';
+export const CONTROL_PLANE_BUCKETS = new Set(['releases', 'release-staging', 'deploy-state', 'runner-logs', 'tf-state', 'tf-state-archive', 'tf-plans', 'tf-plans-root']);
+export const CONTROL_PLANE_QUEUES = new Set(['deploy-requests', 'deploy-requests-dlq']);
+/** Plain-text bindings are visible in the dashboard and API; a credential-like name means a secret is in the wrong type. */
+const CREDENTIAL_NAME = /SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE|API_KEY|CREDENTIAL/;
+const PEM = /-----BEGIN [A-Z ]+-----/;
 const RESERVED_ADAPTERS = new Set(['cloudflare-d1-migrate/v1', 'static-assets/v1', 'host-agent/v1']);
 
 /** Fields each binding type requires beyond `name` and `type`, and those it may carry. */
@@ -194,6 +206,18 @@ function parseBinding(raw: unknown, path: string): ApiBinding {
   const reached = type === 'service' ? out['service'] : type === 'durable_object_namespace' ? out['script_name'] : undefined;
   if (reached !== undefined && FORBIDDEN_SCRIPTS.has(reached)) {
     fail(CODE, `${path}: bindings to control-plane Workers (${reached}) are not allowed`);
+  }
+  if (type === 'secrets_store_secret' && out['store_id'] === CONTROL_PLANE_SECRETS_STORE) {
+    fail(CODE, `${path}: bindings to the control-plane Secrets Store are not allowed`);
+  }
+  if (type === 'r2_bucket' && CONTROL_PLANE_BUCKETS.has(out['bucket_name']!)) {
+    fail(CODE, `${path}: bindings to control-plane bucket ${out['bucket_name']} are not allowed`);
+  }
+  if (type === 'queue' && CONTROL_PLANE_QUEUES.has(out['queue_name']!)) {
+    fail(CODE, `${path}: bindings to control-plane queue ${out['queue_name']} are not allowed`);
+  }
+  if (type === 'plain_text' && (CREDENTIAL_NAME.test(name) || PEM.test(out['text'] ?? ''))) {
+    fail(CODE, `${path}: plain_text may not carry a credential; use a secrets_store_secret binding`);
   }
   return out;
 }

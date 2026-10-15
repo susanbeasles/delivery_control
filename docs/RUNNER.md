@@ -70,7 +70,7 @@ exact staged digests, repository, source commit, signer workflow and a ref of `m
   the runner's backend file, refuses any backend other than our s3 bucket and key, reads state
   serial and lineage, runs `tofu plan -lock=false -out plan.tfplan`, re-reads serial and lineage
   (must be unchanged), renders `tofu show -json`, **redacts every value the plan marks sensitive**,
-  runs `conftest test --namespace main --policy <infra-root main>/policy` on the redacted plan with a
+  runs `conftest test --all-namespaces --policy <infra-root main>/policy` (the invocation `scripts/policy-check.sh` tests, and a run that evaluates no rule is a `policy_error`) on the redacted plan with a
   top-level `stack` field, and uploads `plan.tfplan`, `plan.json`, then `summary.json` (last, so it
   marks a complete plan) to `tf-plans/{stack}/{treeSha}/`.
   - Why `-lock=false`: a plan never writes state, so plan jobs hold no write credential at all, and a
@@ -156,18 +156,20 @@ with a pasted token.
   `RootRunner`). Log: `wrangler r2 object get runner-logs/jobs/<type>/<jobId>/stderr.log --remote --pipe`.
   Events: Workers Logs for `deployer` / `root-runner`, filter on the `jobId` field (events
   `runner.*`, `egress.*`; `egress.denied` shows every refused request with host, path and reason).
-- **Clear an uncertain stack lock.**
-  1. Read the lock: `wrangler r2 object get tf-plans/locks/<stack>.json --remote --pipe` (job id,
+- **Clear an uncertain stack lock.** `<plans>` is `tf-plans` for `infra` and `tf-plans-root` for
+  `infra-root`.
+  1. Read the lock: `wrangler r2 object get <plans>/locks/<stack>.json --remote --pipe` (job id,
      commit, tree, reason) and the job's log.
   2. Compare `tf-state-archive/<stack>/<tree>/<jobId>/before.tfstate` with `after.tfstate` (if
      present) and the current state; run a fresh plan for the current `main` through the normal PR
      path to see what remains.
   3. If a state lock object remains (`tf-state/<stack>/terraform.tfstate.tflock`) and no apply is
      running, remove it: `wrangler r2 object delete tf-state/<stack>/terraform.tfstate.tflock --remote`.
-  4. Remove the stack lock: `wrangler r2 object delete tf-plans/locks/<stack>.json --remote`.
+  4. Remove the stack lock: `wrangler r2 object delete <plans>/locks/<stack>.json --remote`.
   5. Applies resume with the next reviewed plan.
 - **Stale or incomplete plan** (`state_serial_changed`, `plan_incomplete`): delete the three objects
-  under `tf-plans/<stack>/<tree>/` and re-run the plan.
+  under `<plans>/<stack>/<tree>/` and re-run the plan. Stack locks under `locks/` never expire;
+  plans expire after 90 days (infra-root `lifecycle.tf`).
 - **Rotate the trusted root** (`container/trust/trusted_root.jsonl`, commissioning input, absent
   until then; `release.verify` fails with `trusted_root_missing`): on the sandbox host run
   `gh attestation trusted-root > trusted_root.jsonl` (it walks GitHub's and Sigstore's TUF
@@ -225,10 +227,9 @@ Items to confirm against current vendor documentation or a first live run before
 
 ## 8. Open items
 
-- **Root plans share `tf-plans` with the deployer.** The deployer's binding can delete objects
-  there, including `locks/infra-root.json` and root plans. Plan encryption prevents a forged root
-  plan from being applied, but removing the root stack lock is possible. A bucket bound only to the
-  root runner (for example `tf-plans-root`, created by `infra-root`) closes this.
+- **Root plans are isolated (closed).** The root runner binds `TF_PLANS` to `tf-plans-root`
+  (`wrangler.root-runner.jsonc`), which only it can reach, and no R2 S3 credential is scoped to
+  either plan bucket, so the deployer cannot read or delete root plans or `locks/infra-root.json`.
 - **Passphrase recovery copy.** CONTROL-PLANE-SPEC 5.4 asks for an age-encrypted recovery copy of
   each generated passphrase next to the state. Not implemented: age needs X25519 and
   ChaCha20-Poly1305, the latter not in WebCrypto. Until decided, losing a Secrets Store secret loses

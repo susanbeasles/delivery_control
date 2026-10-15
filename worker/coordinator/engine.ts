@@ -142,6 +142,8 @@ export class CoordinatorEngine {
           const order = compareReleaseTags(request.releaseTag, other.requestedReleaseTag);
           if (order < 0) return { status: 'REJECTED', error: 'stale_release' };
           if (order === 0) {
+            // The same tag with different bytes (assets replaced under it) is never joined, as for a committed tag.
+            if (other.requestedManifestSha256 !== manifestSha) return { status: 'REJECTED', error: 'release_conflict' };
             // The same release is already on its way; this request joins it instead of duplicating it.
             this.d.store.put(tokenKey(tokenHash), other.deploymentId);
             return { status: 'QUEUED', deploymentId: other.deploymentId, githubDeploymentId: other.githubDeploymentId };
@@ -431,7 +433,15 @@ export class CoordinatorEngine {
     if (meta.active === r.deploymentId) {
       meta.active = meta.next;
       meta.next = null;
-      if (meta.active) this.enqueueKick(meta, meta.active, 0);
+      if (meta.active) {
+        // Time spent waiting next in line is not the deployment's own: its budget starts now.
+        const promoted = this.record(meta.active);
+        if (promoted && !isTerminal(promoted.phase)) {
+          promoted.deadlineAt = now + DEPLOY_BUDGET_MS;
+          this.writeRecord(promoted);
+        }
+        this.enqueueKick(meta, meta.active, 0);
+      }
     } else if (meta.next === r.deploymentId) {
       meta.next = null;
     }

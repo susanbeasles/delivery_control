@@ -284,8 +284,10 @@ every other `REJECTED` error. `RunnerJobStatus` is defined in `worker/runner/api
 runner exposes the same `runJob`/`jobStatus` on its entrypoint `RootRunner`.
 
 The deployer hashes `token`, calls `AUTHORIZER.consume` with the action and subject, and acts only
-on `ok: true`. The grant is consumed before any other check, so a request that is rejected later
-can never be replayed. Idempotency: the same token can never be consumed twice; the coordinator
+on `ok: true`. Only the request's shape is checked first (a malformed request cannot burn a grant,
+and the grant is bound to the subject's digest anyway); the grant is consumed before every other
+check, so a request that is rejected later can never be replayed. `admit`, `runJob` and the root
+runner's `runJob` all follow this order. Idempotency: the same token can never be consumed twice; the coordinator
 also maps each token hash to the deployment it created, and a request for a release already in
 flight joins that deployment. `requestId` is a fresh UUIDv7 per admission.
 
@@ -347,12 +349,20 @@ validates it fatally, and refuses to act on anything it does not list.
   (`class_name`, optional `script_name`), `version_metadata`. Names follow
   `^[A-Z][A-Z0-9_]{0,63}$` and `DEPLOY_*` is reserved. A `service` or `durable_object_namespace`
   binding may never reach `deployer`, `authorizer` or `root-runner`: application code must not be
-  able to call the control plane's private entrypoints or its ledger.
+  able to call the control plane's private entrypoints or its ledger. Nor may a binding name the
+  control-plane Secrets Store (`b6504fe2d5f64352954629bc7185fb79`), a deploy-estate bucket
+  (`releases`, `release-staging`, `deploy-state`, `runner-logs`, `tf-state`, `tf-state-archive`,
+  `tf-plans`, `tf-plans-root`) or the `deploy-requests` queues; a `plain_text` binding with a
+  credential-like name or a PEM block is refused. Application secrets live in their own store.
 - `keepBindings` is a subset of `["secret_text","secret_key"]`.
 - `credential` names a Secrets Store binding **on the deployer Worker** that holds that target's
   token (Workers Scripts Edit). The deployer fails closed if the binding is missing. VERIFY whether
   Cloudflare can scope Workers Scripts Edit to one script; if it cannot, per-target tokens still
   give separate revocation and audit, but not containment.
+- First deploy health is advisory: a target with no prior version has nothing to roll back to, and
+  its domain does not exist until infra applies it after the script exists, so failed probes are
+  logged (`health.unverified_first_deploy`) and the deployment proceeds. Every later release is
+  checked in full and can roll back to the first one.
 - Script lifecycle: the deployer creates a target's Worker script on its first deploy (upload and
   deploy in one call, then workers.dev and preview URLs disabled), uploads a version per release
   after that, and never deletes a script. Terraform owns everything that points at the script:

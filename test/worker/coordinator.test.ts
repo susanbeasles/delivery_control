@@ -170,6 +170,8 @@ test('replays and duplicates never create a second deployment', async () => {
   assert.deepEqual(again.status === 'QUEUED' && again.deploymentId, first.status === 'QUEUED' && first.deploymentId);
   const joined = await h.admit(h.request(release));
   assert.equal(joined.status === 'QUEUED' && joined.deploymentId, first.status === 'QUEUED' && first.deploymentId, 'same release in flight is joined');
+  const replaced = await h.admit({ ...h.request(release), releaseManifestSha256: 'f'.repeat(64) });
+  assert.deepEqual(replaced, { status: 'REJECTED', error: 'release_conflict' }, 'same tag, different bytes in flight');
   await h.drive((first as any).deploymentId);
   const current = await h.admit(h.request(release));
   assert.equal(current.status, 'ALREADY_CURRENT');
@@ -196,6 +198,19 @@ test('next in line: newest pending request wins, superseded one ends REJECTED', 
   assert.equal((await h.drive(third.deploymentId)).phase, 'SUCCEEDED');
   assert.equal(h.cf.activeRelease(SCRIPT), 'v1.2.0');
   assert.ok(h.github.statuses.some((s) => s.state === 'inactive'));
+});
+
+test('waiting next in line does not use up the deployment budget', async () => {
+  const h = harness();
+  const [a, b] = await Promise.all(['v1.0.0', 'v1.1.0'].map((t) => buildRelease(t)));
+  for (const r of [a!, b!]) h.publish(r);
+  const first = (await h.admit(h.request(a!))) as any;
+  const second = (await h.admit(h.request(b!))) as any;
+  const admittedDeadline = h.record(second.deploymentId).deadlineAt;
+  h.clock.advance(70 * 60_000);
+  await h.drive(first.deploymentId);
+  assert.ok(h.record(second.deploymentId).deadlineAt > admittedDeadline, 'budget restarts on promotion');
+  assert.equal((await h.drive(second.deploymentId)).phase, 'SUCCEEDED');
 });
 
 test('stale expected generation is refused', async () => {
@@ -291,14 +306,19 @@ test('health failure after an upgrade rolls back to the prior version', async ()
   assert.equal(h.github.statuses.at(-1)!.state, 'failure');
 });
 
-test('health failure on a first deploy stops for a human: RECOVERY_FAILED', async () => {
+test('a first deploy commits with health unverified: its domain is attached only after the script exists', async () => {
   const h = harness();
   h.cf.unhealthy.add('v1.0.0');
   const { final } = await deployed(h, 'v1.0.0');
-  assert.equal(final.phase, 'RECOVERY_FAILED');
-  assert.equal(final.lastError?.code, 'no_prior_version');
-  assert.equal(h.state.objects.has('pointers/prosrus/production/current.json'), false);
-  assert.equal(h.github.statuses.at(-1)!.state, 'error');
+  assert.equal(final.phase, 'SUCCEEDED');
+  assert.equal(h.state.json('pointers/prosrus/production/current.json').release.tag, 'v1.0.0');
+  // Once its domain is attached the first release serves; the next release is checked in full and
+  // rolls back to it.
+  h.cf.unhealthy.delete('v1.0.0');
+  h.cf.unhealthy.add('v1.1.0');
+  const second = await deployed(h, 'v1.1.0');
+  assert.equal(second.final.phase, 'ROLLED_BACK');
+  assert.equal(h.cf.activeRelease(SCRIPT), 'v1.0.0');
 });
 
 test('a crash after the version upload reconciles by operation id instead of uploading twice', async () => {

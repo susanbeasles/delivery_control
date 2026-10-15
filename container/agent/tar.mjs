@@ -57,15 +57,17 @@ function checksumOk(block) {
   return sum === expected;
 }
 
+/** Pax record lengths count bytes, so records are cut on bytes and only then decoded. */
 function parsePax(data) {
   const out = {};
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   let offset = 0;
-  while (offset < text.length) {
-    const space = text.indexOf(' ', offset);
-    const length = Number(text.slice(offset, space));
-    if (space === -1 || !Number.isSafeInteger(length) || length <= 0) throw bad('malformed pax header');
-    const record = text.slice(space + 1, offset + length - 1);
+  while (offset < data.byteLength) {
+    const space = data.indexOf(0x20, offset);
+    const length = space === -1 ? NaN : Number(decoder.decode(data.subarray(offset, space)));
+    if (space === -1 || !Number.isSafeInteger(length) || length <= space - offset + 1 || offset + length > data.byteLength) throw bad('malformed pax header');
+    if (data[offset + length - 1] !== 0x0a) throw bad('malformed pax record');
+    const record = decoder.decode(data.subarray(space + 1, offset + length - 1));
     const eq = record.indexOf('=');
     if (eq === -1) throw bad('malformed pax record');
     out[record.slice(0, eq)] = record.slice(eq + 1);
@@ -111,7 +113,8 @@ export function* parseTar(bytes) {
 /** Normalizes an archive path and strips leading components; `null` for the stripped root itself. */
 export function safeRelativePath(raw, strip) {
   if (typeof raw !== 'string' || raw === '' || raw.length > MAX_PATH) throw bad('empty or overlong path');
-  if (raw.includes('\0') || raw.includes('\\')) throw bad(`path contains a NUL or backslash: ${JSON.stringify(raw).slice(0, 120)}`);
+  // Control characters are refused outright: a name like `main.tf\n` would be written where tofu ignores it.
+  if (/[\u0000-\u001f\u007f\\]/.test(raw)) throw bad(`path contains a control character or backslash: ${JSON.stringify(raw).slice(0, 120)}`);
   if (raw.startsWith('/')) throw bad(`absolute path: ${raw.slice(0, 120)}`);
   const segments = raw.replace(/\/+$/, '').split('/');
   for (const segment of segments) {

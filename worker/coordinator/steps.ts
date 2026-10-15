@@ -413,7 +413,17 @@ async function healthCheck(
     return { kind: 'progress', patch: persist({ ...progress, index: progress.index + 1, attempt: 0, nextAt: now }) };
   }
   const attempt = progress.attempt + 1;
-  if (attempt >= settings.attempts) fail(failCode, `${id} unhealthy after ${attempt} probes: ${result.reason}`);
+  if (attempt >= settings.attempts) {
+    // A target's first deploy has nothing to roll back to, and its domain is attached by infra only
+    // after the script exists (CONTRACTS.md section 5), so its health cannot block: failing would end
+    // RECOVERY_FAILED with the same code live. It is logged as unverified; the next release is checked
+    // in full and can roll back to this one.
+    if (failCode === 'health_failed' && t.priorVersionId === null) {
+      log('warn', 'health.unverified_first_deploy', { deploymentId: r.deploymentId, target: id, reason: result.reason });
+      return { kind: 'progress', patch: persist({ ...progress, index: progress.index + 1, attempt: 0, nextAt: now }) };
+    }
+    fail(failCode, `${id} unhealthy after ${attempt} probes: ${result.reason}`);
+  }
   return { kind: 'wait', untilMs: now + settings.intervalMs, patch: persist({ ...progress, attempt, nextAt: now + settings.intervalMs }) };
 }
 

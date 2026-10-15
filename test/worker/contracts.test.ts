@@ -100,4 +100,16 @@ test('registry: valid, and every guard fires', () => {
     assert.throws(() => parseRegistry(mutate((d) => target(d).bindings.push(binding))), /control-plane Workers/, binding.name);
   }
   assert.doesNotThrow(() => parseRegistry(mutate((d) => target(d).bindings.push({ name: 'OWN_DO', type: 'durable_object_namespace', class_name: 'Sessions' }))));
+  for (const [binding, message] of [
+    [{ name: 'ROOT_KEY', type: 'secrets_store_secret', store_id: 'b6504fe2d5f64352954629bc7185fb79', secret_name: 'CF_ROOT_APPLY' }, /control-plane Secrets Store/],
+    [{ name: 'STATE', type: 'r2_bucket', bucket_name: 'tf-state' }, /control-plane bucket/],
+    [{ name: 'POINTERS', type: 'r2_bucket', bucket_name: 'deploy-state' }, /control-plane bucket/],
+    [{ name: 'KICK', type: 'queue', queue_name: 'deploy-requests' }, /control-plane queue/],
+    [{ name: 'API_TOKEN', type: 'plain_text', text: 'abc' }, /credential/],
+    [{ name: 'CERT', type: 'plain_text', text: '-----BEGIN PRIVATE KEY-----' }, /credential/],
+  ] as const) {
+    assert.throws(() => parseRegistry(mutate((d) => target(d).bindings.push(binding as any))), message, binding.name);
+  }
+  assert.doesNotThrow(() => parseRegistry(mutate((d) => target(d).bindings.push({ name: 'OWN_SECRET', type: 'secrets_store_secret', store_id: 'a'.repeat(32), secret_name: 'APP_KEY' }))));
+  assert.doesNotThrow(() => parseRegistry(mutate((d) => target(d).bindings.push({ name: 'UPLOADS', type: 'r2_bucket', bucket_name: 'app-uploads' }))));
 });

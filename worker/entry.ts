@@ -1,3 +1,4 @@
+import { parseTerraformSubject } from './runner/subject.ts';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { parseDeploySubject } from './contracts/subject.ts';
 import type { AdmissionResult, DeployKick, DeploymentState, PromotionRequest } from './coordinator/types.ts';
@@ -92,6 +93,8 @@ export class Deployer extends WorkerEntrypoint<Env> {
       const type = input?.job?.type;
       if (type !== 'terraform.plan' && type !== 'terraform.apply') return { state: 'rejected', error: 'bad_job_type' };
       const action = type === 'terraform.plan' ? 'infra.plan' : 'infra.apply';
+      // Shape first, as admit and the root runner do: a malformed request must not burn the grant.
+      parseTerraformSubject(input.job.subject, { stack: 'infra', operation: type === 'terraform.plan' ? 'plan' : 'apply' });
       const denied = await consumeGrant(this.env, input.token, action, input.job.subject);
       if (denied) return { state: 'rejected', error: denied };
       return await submitTerraformJob(this.env, input.job.subject, action);

@@ -160,9 +160,11 @@ export function tarBytes(entries: TarEntry[]): Buffer {
     if (e.pax) {
       const body = Object.entries(e.pax)
         .map(([k, v]) => {
+          // Pax lengths count bytes, as tar writers produce them.
           const record = ` ${k}=${v}\n`;
-          let length = record.length + 1;
-          while (`${length}${record}`.length !== length) length = `${length}${record}`.length;
+          const bytes = (s: string) => Buffer.byteLength(s);
+          let length = bytes(record) + 1;
+          while (bytes(`${length}${record}`) !== length) length = bytes(`${length}${record}`);
           return `${length}${record}`;
         })
         .join('');
