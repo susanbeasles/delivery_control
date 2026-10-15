@@ -44,6 +44,12 @@ test('every invalid job type field is refused with its code', () => {
     ['bad_timeout', { timeoutMs: 1.5 }],
     ['bad_log_limit', { maxLogBytes: 100 }],
     ['bad_log_limit', { maxLogBytes: 64 * 1024 * 1024 }],
+    ['bad_artifacts', { artifacts: { dir: 'out', maxBytes: 10, maxFiles: 1 } }],
+    ['bad_artifacts', { artifacts: { dir: '/', maxBytes: 10, maxFiles: 1 } }],
+    ['bad_artifacts', { artifacts: { dir: '/job/out', maxBytes: 0, maxFiles: 1 } }],
+    ['bad_artifacts', { artifacts: { dir: '/job/out', maxBytes: 10, maxFiles: 5_000 } }],
+    ['bad_stage', { stage: { dir: 'in', maxBytes: 10, maxFiles: 1 } }],
+    ['bad_stage', { stage: { dir: '/job/in', maxBytes: 10, maxFiles: 0 } }],
   ];
   for (const [expected, patch] of cases) assert.equal(code({ ...planSpec, ...patch }), expected, JSON.stringify(patch));
 });

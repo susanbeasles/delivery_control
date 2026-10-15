@@ -1,6 +1,7 @@
 // Ports the controller depends on. Production binds them to the Durable Object container, SQLite storage, alarms,
 // R2 and Secrets Store; tests bind fakes. The controller never imports a Cloudflare module.
-import type { InstanceType, JobTypeRegistry } from './job-type.ts';
+import type { Envelope } from './envelope.ts';
+import type { InstanceType, JobTypeRegistry, JobTypeSpec } from './job-type.ts';
 import type { JobRecord } from './records.ts';
 
 export interface ProcessHandle {
@@ -19,8 +20,8 @@ export interface ContainerStartOptions {
 }
 
 export interface ContainerExecOptions {
-  readonly env: Record<string, string>;
-  readonly stdin: ReadableStream<Uint8Array>;
+  readonly env?: Record<string, string>;
+  readonly stdin?: ReadableStream<Uint8Array>;
   readonly stdout: 'pipe';
   readonly stderr: 'pipe';
 }
@@ -64,11 +65,18 @@ export interface LogSink {
 }
 
 export interface SecretSource {
-  get(name: string): Promise<string>;
+  /** Resolve one secret the job type declared. The envelope lets a source scope a minted credential to the job. */
+  get(name: string, envelope: Envelope): Promise<string>;
+}
+
+export interface StagedFile {
+  /** Path relative to the job type's stage directory. */
+  readonly path: string;
+  readonly bytes: Uint8Array;
 }
 
 export interface ControllerEvent {
-  readonly stage: 'log_upload' | 'outcome_upload' | 'destroy' | 'alarm';
+  readonly stage: 'log_upload' | 'artifact_upload' | 'outcome_upload' | 'destroy' | 'alarm';
   readonly job_id: string;
   readonly detail: string;
 }
@@ -80,8 +88,11 @@ export interface ControllerDeps {
   readonly clock: Clock;
   readonly sink: LogSink;
   readonly secrets: SecretSource;
-  readonly outbound: (allowedHosts: readonly string[]) => OutboundBinding;
+  /** The egress gate stub for one job: the job type's allowlist, and the envelope for anything the gate injects. */
+  readonly outbound: (spec: JobTypeSpec, envelope: Envelope) => OutboundBinding;
   readonly jobTypes: JobTypeRegistry;
+  /** Files to write into the container before the job runs, for job types that declare `stage`. */
+  readonly stage?: (spec: JobTypeSpec, envelope: Envelope) => Promise<readonly StagedFile[]>;
   /** Key prefix in the log sink; default `logs/`. */
   readonly logPrefix?: string;
   /** Best-effort failures the controller survived; wire to console or metrics. */

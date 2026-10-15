@@ -4,6 +4,21 @@ import { JOB_TYPE_NAME } from './envelope.ts';
 
 export type InstanceType = 'lite' | 'basic' | 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
 
+export interface ArtifactSpec {
+  /** Absolute directory inside the container the job writes its outputs to; collected after the job ends. */
+  readonly dir: string;
+  /** Total bytes collected across all files; a file that would exceed the remainder is skipped and noted. */
+  readonly maxBytes: number;
+  readonly maxFiles: number;
+}
+
+export interface StageSpec {
+  /** Absolute directory inside the container where staged input files are written before the job runs. */
+  readonly dir: string;
+  readonly maxBytes: number;
+  readonly maxFiles: number;
+}
+
 export interface JobTypeSpec {
   /** Job type name, matched against `envelope.job_type`. */
   readonly name: string;
@@ -19,6 +34,10 @@ export interface JobTypeSpec {
   readonly timeoutMs: number;
   /** Per-stream cap on captured log bytes. */
   readonly maxLogBytes: number;
+  /** Outputs to collect from the container into the log sink after the job ends. */
+  readonly artifacts?: ArtifactSpec;
+  /** Inputs the consumer stages into the container before the job runs (for example a stored plan). */
+  readonly stage?: StageSpec;
 }
 
 export type JobTypeErrorCode =
@@ -30,6 +49,8 @@ export type JobTypeErrorCode =
   | 'bad_host'
   | 'bad_timeout'
   | 'bad_log_limit'
+  | 'bad_artifacts'
+  | 'bad_stage'
   | 'duplicate_name';
 
 export class JobTypeError extends Error {
@@ -50,6 +71,8 @@ export const JOB_TYPE_LIMITS = Object.freeze({
   maxHosts: 64,
   maxArgs: 64,
   maxArgLength: 4_096,
+  maxArtifactBytes: 256 * 1024 * 1024,
+  maxArtifactFiles: 1_000,
 });
 
 /** Environment names the controller sets itself; a job type may not claim them as secrets. */
@@ -112,6 +135,8 @@ export function defineJobType(spec: JobTypeSpec): JobTypeSpec {
   unique(spec.allowedHosts, 'bad_host');
   if (!Number.isSafeInteger(spec.timeoutMs) || spec.timeoutMs < JOB_TYPE_LIMITS.minTimeoutMs || spec.timeoutMs > JOB_TYPE_LIMITS.maxTimeoutMs) fail('bad_timeout');
   if (!Number.isSafeInteger(spec.maxLogBytes) || spec.maxLogBytes < JOB_TYPE_LIMITS.minLogBytes || spec.maxLogBytes > JOB_TYPE_LIMITS.maxLogBytes) fail('bad_log_limit');
+  const artifacts = spec.artifacts === undefined ? undefined : validateArtifacts(spec.artifacts);
+  const stage = spec.stage === undefined ? undefined : validateStage(spec.stage);
   return Object.freeze({
     name: spec.name,
     image: spec.image,
@@ -121,7 +146,23 @@ export function defineJobType(spec: JobTypeSpec): JobTypeSpec {
     allowedHosts: Object.freeze([...spec.allowedHosts]),
     timeoutMs: spec.timeoutMs,
     maxLogBytes: spec.maxLogBytes,
+    ...(artifacts === undefined ? {} : { artifacts }),
+    ...(stage === undefined ? {} : { stage }),
   });
+}
+
+function validateStage(spec: StageSpec): StageSpec {
+  if (typeof spec.dir !== 'string' || !ABSOLUTE_PATH.test(spec.dir) || spec.dir === '/') fail('bad_stage', 'dir');
+  if (!Number.isSafeInteger(spec.maxBytes) || spec.maxBytes < 1 || spec.maxBytes > JOB_TYPE_LIMITS.maxArtifactBytes) fail('bad_stage', 'maxBytes');
+  if (!Number.isSafeInteger(spec.maxFiles) || spec.maxFiles < 1 || spec.maxFiles > JOB_TYPE_LIMITS.maxArtifactFiles) fail('bad_stage', 'maxFiles');
+  return Object.freeze({ dir: spec.dir, maxBytes: spec.maxBytes, maxFiles: spec.maxFiles });
+}
+
+function validateArtifacts(spec: ArtifactSpec): ArtifactSpec {
+  if (typeof spec.dir !== 'string' || !ABSOLUTE_PATH.test(spec.dir) || spec.dir === '/') fail('bad_artifacts', 'dir');
+  if (!Number.isSafeInteger(spec.maxBytes) || spec.maxBytes < 1 || spec.maxBytes > JOB_TYPE_LIMITS.maxArtifactBytes) fail('bad_artifacts', 'maxBytes');
+  if (!Number.isSafeInteger(spec.maxFiles) || spec.maxFiles < 1 || spec.maxFiles > JOB_TYPE_LIMITS.maxArtifactFiles) fail('bad_artifacts', 'maxFiles');
+  return Object.freeze({ dir: spec.dir, maxBytes: spec.maxBytes, maxFiles: spec.maxFiles });
 }
 
 export class JobTypeRegistry {

@@ -1,21 +1,32 @@
 // The runner: one job per controller. Lease, container start with egress interception, envelope on stdin,
 // bounded log capture, hard timeout, independent watchdog, container destroyed before the lease is released,
 // outcome recorded once and never retried when uncertain. Never throws out of `run` or `watchdog`.
-import { EnvelopeError, envelopeDigest, parseEnvelope, serializeEnvelope, type Envelope } from './envelope.ts';
+import { EnvelopeError, envelopeDigest, parseEnvelope, serializeEnvelope, sha256Hex, type Envelope } from './envelope.ts';
 import type { JobTypeSpec } from './job-type.ts';
 import { captureStream, renderCapture, type Captured } from './capture.ts';
 import { createRedactor, type Redactor } from './redact.ts';
 import type { ControllerDeps, ProcessHandle } from './ports.ts';
-import type { JobRecord, LogRef, Outcome, OutcomeReason, OutcomeStatus, RunResult } from './records.ts';
+import type { ArtifactRef, JobRecord, LogRef, Outcome, OutcomeReason, OutcomeStatus, RunResult } from './records.ts';
 
 export const TIMING = Object.freeze({
-  /** Added to the job timeout to form the lease deadline: time the controller gets to kill, upload and destroy. */
-  deadlineGraceMs: 30_000,
+  /** Added to the job timeout to form the lease deadline: time the controller gets to kill, collect, upload and destroy. */
+  deadlineGraceMs: 120_000,
   /** Between SIGTERM and SIGKILL at timeout. */
   killGraceMs: 5_000,
   /** How long log capture may continue after the job ended before it is cut off. */
   captureGraceMs: 5_000,
+  /** Cap on the artifact listing itself. */
+  listingBytes: 1_048_576,
 });
+
+const RELATIVE_PATH = /^(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+$/;
+
+/** A path under a directory: plain segments only, never `.` or `..`. */
+export function isRelativePath(value: string): boolean {
+  return RELATIVE_PATH.test(value) && value.split('/').every((segment) => segment !== '.' && segment !== '..');
+}
+
+const STAGE_SCRIPT = 'umask 077 && mkdir -p -- "$(dirname -- "$1")" && cat > "$1"';
 
 const CA_PATH = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
 /**
@@ -126,6 +137,7 @@ export class JobController {
       finished_at: new Date(finishedAt).toISOString(),
       duration_ms: finishedAt - record.started_at,
       logs: { stdout: null, stderr: null },
+      artifacts: [],
       notes,
     });
   }
@@ -163,11 +175,11 @@ export class JobController {
     let stdout: Promise<Captured> | undefined;
     let stderr: Promise<Captured> | undefined;
     try {
-      secrets = await this.#resolveSecrets(spec);
+      secrets = await this.#resolveSecrets(spec, envelope);
       const image = container.images[spec.image];
       if (image === undefined) throw new Error(`container image "${spec.image}" is not configured on this Worker`);
       container.start({ image, instance: spec.instance, enableInternet: false, labels: { job_id: envelope.job_id, job_type: envelope.job_type } });
-      const outbound = this.#deps.outbound(spec.allowedHosts);
+      const outbound = this.#deps.outbound(spec, envelope);
       await container.interceptAllOutboundHttp(outbound);
       await container.interceptOutboundHttps('*', outbound);
       const env: Record<string, string> = {
@@ -177,6 +189,7 @@ export class JobController {
         RUNNER_JOB_TYPE: envelope.job_type,
         RUNNER_ATTEMPT: String(record.attempt),
       };
+      await this.#stageFiles(spec, envelope, notes);
       const proc = await container.exec(spec.command, { env, stdin: bytesStream(serializeEnvelope(envelope)), stdout: 'pipe', stderr: 'pipe' });
       phase = 'running';
       stdout = captureStream(proc.stdout, spec.maxLogBytes, stopCapture.signal);
@@ -187,6 +200,7 @@ export class JobController {
       notes.push(`${phase}: ${describe(error)}`);
     }
     const redactor = createRedactor(secrets);
+    const artifacts = phase === 'running' ? await this.#collectArtifacts(spec, record, notes, abort.signal) : [];
     const logs = await this.#storeLogs(record, stdout, stderr, stopCapture, redactor, notes, abort.signal);
     await this.#destroy(record.job_id, notes);
     abort.abort();
@@ -204,14 +218,97 @@ export class JobController {
       finished_at: new Date(finishedAt).toISOString(),
       duration_ms: finishedAt - record.started_at,
       logs,
+      artifacts,
       notes: notes.map((note) => redactor.apply(note)),
     };
   }
 
-  async #resolveSecrets(spec: JobTypeSpec): Promise<Record<string, string>> {
+  /** Write the files the consumer stages for this job into the container before the job runs. Any failure is a start failure. */
+  async #stageFiles(spec: JobTypeSpec, envelope: Envelope, notes: string[]): Promise<void> {
+    const stage = this.#deps.stage;
+    const cfg = spec.stage;
+    if (stage === undefined || cfg === undefined) return;
+    const files = await stage(spec, envelope);
+    if (files.length > cfg.maxFiles) throw new Error(`stage: ${files.length} files exceed the limit of ${cfg.maxFiles}`);
+    let budget = cfg.maxBytes;
+    const seen = new Set<string>();
+    for (const file of files) {
+      if (!isRelativePath(file.path) || seen.has(file.path)) throw new Error(`stage: unsafe or duplicate path ${file.path}`);
+      seen.add(file.path);
+      budget -= file.bytes.byteLength;
+      if (budget < 0) throw new Error(`stage: files exceed the budget of ${cfg.maxBytes} bytes`);
+      const proc = await this.#deps.container.exec(['/bin/sh', '-c', STAGE_SCRIPT, 'stage', `${cfg.dir}/${file.path}`], {
+        stdin: bytesStream(file.bytes),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const exit = await proc.exitCode;
+      if (exit !== 0) throw new Error(`stage: writing ${file.path} exited ${exit}`);
+    }
+    if (files.length > 0) notes.push(`staged ${files.length} file(s) under ${cfg.dir}`);
+  }
+
+  /** Copy the job's output files out of the container before it is destroyed. Bounded, sorted, never fatal. */
+  async #collectArtifacts(spec: JobTypeSpec, record: JobRecord, notes: string[], signal: AbortSignal): Promise<ArtifactRef[]> {
+    const cfg = spec.artifacts;
+    const { container } = this.#deps;
+    if (cfg === undefined || !container.running) return [];
+    const collected: ArtifactRef[] = [];
+    try {
+      const paths = await this.#listArtifacts(cfg.dir, signal);
+      if (paths === undefined) {
+        notes.push('artifact listing failed');
+        return [];
+      }
+      const selected = paths.slice(0, cfg.maxFiles);
+      if (paths.length > selected.length) notes.push(`${paths.length - selected.length} artifact files beyond the limit of ${cfg.maxFiles} were not collected`);
+      let budget = cfg.maxBytes;
+      for (const path of selected) {
+        const relative = path.slice(cfg.dir.length + 1);
+        if (!path.startsWith(`${cfg.dir}/`) || !isRelativePath(relative)) {
+          notes.push(`artifact skipped: unsafe path`);
+          continue;
+        }
+        const proc = await container.exec(['cat', path], { stdout: 'pipe', stderr: 'pipe' });
+        const captured = await captureStream(proc.stdout, Math.max(budget, 1), signal);
+        const exit = await proc.exitCode.then((code) => code, () => -1);
+        if (exit !== 0 || captured.interrupted) {
+          notes.push(`artifact skipped: ${relative} could not be read`);
+          continue;
+        }
+        if (captured.truncated || captured.totalBytes > budget) {
+          notes.push(`artifact skipped: ${relative} (${captured.totalBytes} bytes) exceeds the remaining budget of ${budget} bytes`);
+          continue;
+        }
+        const key = this.#key(record, `artifacts/${relative}`);
+        await this.#deps.sink.put(key, captured.head, 'application/octet-stream');
+        budget -= captured.totalBytes;
+        collected.push({ path: relative, key, bytes: captured.totalBytes, sha256: await sha256Hex(captured.head) });
+      }
+    } catch (error) {
+      const detail = describe(error);
+      notes.push(`artifact collection failed: ${detail}`);
+      this.#deps.observe?.({ stage: 'artifact_upload', job_id: record.job_id, detail });
+    }
+    return collected;
+  }
+
+  async #listArtifacts(dir: string, signal: AbortSignal): Promise<string[] | undefined> {
+    const proc = await this.#deps.container.exec(['find', dir, '-type', 'f', '-print0'], { stdout: 'pipe', stderr: 'pipe' });
+    const listing = await captureStream(proc.stdout, TIMING.listingBytes, signal);
+    const exit = await proc.exitCode.then((code) => code, () => -1);
+    if (exit !== 0 || listing.truncated || listing.interrupted) return undefined;
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+      .decode(listing.head)
+      .split('\0')
+      .filter((path) => path.length > 0)
+      .sort();
+  }
+
+  async #resolveSecrets(spec: JobTypeSpec, envelope: Envelope): Promise<Record<string, string>> {
     const values: Record<string, string> = {};
     for (const name of spec.secrets) {
-      const value = await this.#deps.secrets.get(name);
+      const value = await this.#deps.secrets.get(name, envelope);
       if (typeof value !== 'string' || value.length === 0) throw new Error(`secret ${name} is empty`);
       values[name] = value;
     }

@@ -2,9 +2,10 @@
 // SQLite storage, `durable_object` container scheduling) and exports `RunnerOutbound` as the egress gate.
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import { JobController } from './controller.ts';
-import { isHostname, type JobTypeRegistry } from './job-type.ts';
+import type { Envelope } from './envelope.ts';
+import { isHostname, type JobTypeRegistry, type JobTypeSpec } from './job-type.ts';
 import { createOutboundFetch } from './outbound.ts';
-import type { Alarms, Clock, ContainerHandle, LogSink, OutboundBinding, SecretSource } from './ports.ts';
+import type { Alarms, Clock, ContainerHandle, LogSink, OutboundBinding, SecretSource, StagedFile } from './ports.ts';
 import type { RunResult } from './records.ts';
 import { SqlJobStore } from './sql-store.ts';
 
@@ -65,7 +66,7 @@ export class SecretsStoreSource implements SecretSource {
   constructor(bindings: Readonly<Record<string, SecretsStoreSecret>>) {
     this.#bindings = bindings;
   }
-  get(name: string): Promise<string> {
+  get(name: string, _envelope: Envelope): Promise<string> {
     const binding = this.#bindings[name];
     if (binding === undefined) return Promise.reject(new Error(`no Secrets Store binding for ${name}`));
     return binding.get();
@@ -97,8 +98,12 @@ export abstract class RunnerJob<Env extends RunnerJobEnv = RunnerJobEnv> extends
   protected abstract jobTypes(): JobTypeRegistry;
   /** Resolves a secret name from a job type to its Secrets Store binding. */
   protected abstract secrets(): SecretSource;
-  /** The egress gate stub for one job's allowlist, usually `this.ctx.exports.Outbound({ props: { allowedHosts } })`. */
-  protected abstract outbound(allowedHosts: readonly string[]): OutboundBinding;
+  /** The egress gate stub for one job, usually `this.ctx.exports.Outbound({ props: { allowedHosts: spec.allowedHosts } })`. */
+  protected abstract outbound(spec: JobTypeSpec, envelope: Envelope): OutboundBinding;
+  /** Files to write into the container before a job that declares `stage` runs. Default: none. */
+  protected stage(_spec: JobTypeSpec, _envelope: Envelope): Promise<readonly StagedFile[]> {
+    return Promise.resolve([]);
+  }
 
   protected controller(): JobController {
     if (this.#controller !== undefined) return this.#controller;
@@ -112,7 +117,8 @@ export abstract class RunnerJob<Env extends RunnerJobEnv = RunnerJobEnv> extends
       clock: new WorkersClock(),
       sink: new R2LogSink(this.env.RUNNER_LOGS),
       secrets: this.secrets(),
-      outbound: (hosts) => this.outbound(hosts),
+      outbound: (spec, envelope) => this.outbound(spec, envelope),
+      stage: (spec, envelope) => this.stage(spec, envelope),
       jobTypes: this.jobTypes(),
       observe: (event) => console.error(JSON.stringify({ runner: event })),
     });

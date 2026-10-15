@@ -1,6 +1,6 @@
 import { JobController } from '../src/controller.ts';
 import { JobTypeRegistry, type JobTypeSpec } from '../src/job-type.ts';
-import type { ControllerEvent } from '../src/ports.ts';
+import type { ControllerEvent, StagedFile } from '../src/ports.ts';
 import { FakeAlarms, FakeClock, FakeContainer, FakeOutbound, MemorySecrets, MemorySink, MemoryStore, encoder, until } from './fakes.ts';
 
 export const JOB_ID = '018f3a2e-7c4b-7a11-9d2e-3f4a5b6c7d8e';
@@ -33,7 +33,7 @@ export function envelopeJson(overrides: Record<string, unknown> = {}): Record<st
 
 export const envelopeBytes = (overrides: Record<string, unknown> = {}): Uint8Array => encoder.encode(JSON.stringify(envelopeJson(overrides)));
 
-export function harness(spec: JobTypeSpec = planSpec, secrets: Record<string, string> = { CF_PLAN: SECRET_VALUE }) {
+export function harness(spec: JobTypeSpec = planSpec, secrets: Record<string, string> = { CF_PLAN: SECRET_VALUE }, stageFiles: StagedFile[] = []) {
   const container = new FakeContainer();
   const store = new MemoryStore();
   const alarms = new FakeAlarms();
@@ -41,24 +41,26 @@ export function harness(spec: JobTypeSpec = planSpec, secrets: Record<string, st
   const sink = new MemorySink();
   const events: ControllerEvent[] = [];
   const outbounds: FakeOutbound[] = [];
+  const secretSource = new MemorySecrets(secrets);
   const controller = new JobController({
     container,
     store,
     alarms,
     clock,
     sink,
-    secrets: new MemorySecrets(secrets),
-    outbound: (hosts) => {
-      const binding = new FakeOutbound(hosts);
+    secrets: secretSource,
+    outbound: (spec, envelope) => {
+      const binding = new FakeOutbound(spec, envelope);
       outbounds.push(binding);
       return binding;
     },
     jobTypes: new JobTypeRegistry([spec]),
     observe: (event) => events.push(event),
+    stage: async () => stageFiles,
   });
   /** Resolves once the job command has been exec'ed in the fake container. */
   const started = (count = 1) => until(() => container.execs.length >= count, `${count} exec(s)`);
-  return { container, store, alarms, clock, sink, events, outbounds, controller, started };
+  return { container, store, alarms, clock, sink, events, outbounds, controller, started, secrets: secretSource };
 }
 
 export const logKey = (file: string): string => `logs/terraform.plan/${JOB_ID}/${file}`;

@@ -23,7 +23,7 @@ function sqlite(): SqlLike {
 }
 
 const running: JobRecord = { job_id: JOB_ID, job_type: 'terraform.plan', idempotency_key: KEY, envelope_digest: 'd'.repeat(64), state: 'running', attempt: 1, started_at: 1_000, deadline_at: 91_000, outcome: null };
-const outcome: Outcome = { v: 1, job_id: JOB_ID, job_type: 'terraform.plan', idempotency_key: KEY, attempt: 1, status: 'succeeded', reason: 'exit_zero', exit_code: 0, started_at: '2026-10-15T12:00:00.000Z', finished_at: '2026-10-15T12:00:05.000Z', duration_ms: 5_000, logs: { stdout: { key: 'k', bytes: 3, truncated: false }, stderr: null }, notes: [] };
+const outcome: Outcome = { v: 1, job_id: JOB_ID, job_type: 'terraform.plan', idempotency_key: KEY, attempt: 1, status: 'succeeded', reason: 'exit_zero', exit_code: 0, started_at: '2026-10-15T12:00:00.000Z', finished_at: '2026-10-15T12:00:05.000Z', duration_ms: 5_000, logs: { stdout: { key: 'k', bytes: 3, truncated: false }, stderr: null }, artifacts: [{ path: 'plan.json', key: 'a', bytes: 7, sha256: 'f'.repeat(64) }], notes: [] };
 
 test('records round-trip through SQLite, including the outcome', () => {
   const store = new SqlJobStore(sqlite());

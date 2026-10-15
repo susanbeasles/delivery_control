@@ -1,5 +1,7 @@
 // Fakes for the controller's ports. Deterministic: the clock only moves when a test advances it.
 import type { Alarms, Clock, ContainerExecOptions, ContainerHandle, ContainerStartOptions, JobStore, LogSink, OutboundBinding, ProcessHandle, SecretSource } from '../src/ports.ts';
+import type { Envelope } from '../src/envelope.ts';
+import type { JobTypeSpec } from '../src/job-type.ts';
 import type { JobRecord } from '../src/records.ts';
 
 export const encoder = new TextEncoder();
@@ -110,7 +112,9 @@ export class MemorySecrets implements SecretSource {
   constructor(values: Record<string, string>) {
     this.values = values;
   }
-  async get(name: string): Promise<string> {
+  readonly requests: { name: string; job_id: string }[] = [];
+  async get(name: string, envelope: Envelope): Promise<string> {
+    this.requests.push({ name, job_id: envelope.job_id });
     const value = this.values[name];
     if (value === undefined) throw new Error(`missing secret ${name}`);
     return value;
@@ -119,8 +123,10 @@ export class MemorySecrets implements SecretSource {
 
 export class FakeOutbound implements OutboundBinding {
   readonly allowedHosts: readonly string[];
-  constructor(allowedHosts: readonly string[]) {
-    this.allowedHosts = allowedHosts;
+  readonly jobId: string;
+  constructor(spec: JobTypeSpec, envelope: Envelope) {
+    this.allowedHosts = spec.allowedHosts;
+    this.jobId = envelope.job_id;
   }
   async fetch(): Promise<Response> {
     return new Response('fake');
@@ -177,6 +183,13 @@ export class FakeProcess implements ProcessHandle {
   exitWithoutClosing(code: number): void {
     this.#exit(code);
   }
+  /** A finished utility process: emits `bytes` on stdout and exits with `code`. */
+  static completed(bytes: Uint8Array, code = 0): FakeProcess {
+    const process = new FakeProcess();
+    if (bytes.byteLength > 0) process.outBytes(bytes);
+    process.exit(code);
+    return process;
+  }
   failExit(): void {
     this.closeStreams();
     this.#fail(new Error('exit status lost'));
@@ -222,6 +235,12 @@ export class FakeContainer implements ContainerHandle {
   failExec: Error | undefined;
   failDestroy: Error | undefined;
   nextProcess: () => FakeProcess = () => new FakeProcess();
+  /** Files the job "wrote": absolute path to bytes. `find` and `cat` are answered from here. */
+  files = new Map<string, Uint8Array>();
+  failFind = false;
+  unreadable = new Set<string>();
+  staged: string[] = [];
+  failStagePaths = new Set<string>();
   #died!: () => void;
   #monitor = new Promise<void>((resolve) => {
     this.#died = resolve;
@@ -234,9 +253,30 @@ export class FakeContainer implements ContainerHandle {
   async exec(command: readonly string[], options: ContainerExecOptions): Promise<FakeProcess> {
     if (!this.running) throw new Error('container not running');
     if (this.failExec) throw this.failExec;
+    if (command[0] === 'find') {
+      const dir = command[1] ?? '';
+      if (this.failFind) return FakeProcess.completed(new Uint8Array(0), 1);
+      const listed = [...this.files.keys()].filter((path) => path.startsWith(`${dir}/`)).sort((a, b) => b.localeCompare(a));
+      return FakeProcess.completed(encoder.encode(listed.map((path) => `${path}\0`).join('')));
+    }
+    if (command[0] === '/bin/sh' && command[2] !== undefined && command[2].includes('cat > "$1"')) {
+      const path = command[4] ?? '';
+      const chunks: Uint8Array[] = [];
+      await options.stdin?.pipeTo(new WritableStream<Uint8Array>({ write: (chunk) => void chunks.push(chunk) }));
+      if (this.failStagePaths.has(path)) return FakeProcess.completed(new Uint8Array(0), 1);
+      this.files.set(path, concat(chunks));
+      this.staged.push(path);
+      return FakeProcess.completed(new Uint8Array(0));
+    }
+    if (command[0] === 'cat') {
+      const path = command[1] ?? '';
+      const bytes = this.files.get(path);
+      if (bytes === undefined || this.unreadable.has(path)) return FakeProcess.completed(new Uint8Array(0), 1);
+      return FakeProcess.completed(bytes);
+    }
     const process = this.nextProcess();
     this.execs.push({ command, options, process });
-    void options.stdin.pipeTo(process.stdin);
+    if (options.stdin !== undefined) void options.stdin.pipeTo(process.stdin);
     return process;
   }
   monitor(): Promise<void> {

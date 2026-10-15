@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONTAINER_TRUST_ENV, TIMING } from '../src/controller.ts';
-import { parseEnvelope, serializeEnvelope } from '../src/envelope.ts';
+import { parseEnvelope, serializeEnvelope, sha256Hex } from '../src/envelope.ts';
 import type { Outcome } from '../src/records.ts';
-import { FakeProcess, decoder, settle } from './fakes.ts';
+import { FakeProcess, decoder, encoder, settle } from './fakes.ts';
 import { JOB_ID, SECRET_VALUE, envelopeBytes, harness, logKey, planSpec } from './helpers.ts';
 
 function done(result: Awaited<ReturnType<ReturnType<typeof harness>['controller']['run']>>): Outcome {
@@ -25,7 +25,7 @@ test('happy path: lease, egress gate, envelope on stdin, secrets in env, logs in
   assert.deepEqual(h.container.starts, [{ image: h.container.images['deployer'], instance: 'standard-1', enableInternet: false, labels: { job_id: JOB_ID, job_type: 'terraform.plan' } }]);
   // both egress interceptions registered before exec, carrying the job type's allowlist
   assert.deepEqual(h.container.intercepts.map((i) => [i.kind, i.address]), [['http', null], ['https', '*']]);
-  assert.deepEqual(h.outbounds.map((o) => o.allowedHosts), [planSpec.allowedHosts]);
+  assert.deepEqual(h.outbounds.map((o) => [o.allowedHosts, o.jobId]), [[planSpec.allowedHosts, JOB_ID]]);
   // envelope delivered on stdin, canonical, no secrets inside
   assert.deepEqual(exec.command, planSpec.command);
   const stdin = decoder.decode(exec.process.stdinBytes);
@@ -42,6 +42,7 @@ test('happy path: lease, egress gate, envelope on stdin, secrets in env, logs in
   assert.equal(outcome.exit_code, 0);
   assert.equal(outcome.duration_ms, 2_000);
   assert.deepEqual(outcome.logs, { stdout: { key: logKey('stdout.log'), bytes: 9, truncated: false }, stderr: { key: logKey('stderr.log'), bytes: 5, truncated: false } });
+  assert.deepEqual(outcome.artifacts, []);
   assert.equal(h.sink.text(logKey('stdout.log')), 'planning\n');
   assert.deepEqual(h.sink.json(logKey('outcome.json')), outcome);
   assert.equal(h.sink.objects.get(logKey('outcome.json'))?.contentType, 'application/json');
@@ -302,4 +303,133 @@ test('a resubmission after the lease expired settles the lost job instead of run
   assert.equal(outcome.reason, 'watchdog');
   assert.equal(h.container.starts.length, 0);
   assert.equal(h.container.destroys, 1);
+});
+
+const artifactSpec = { ...planSpec, artifacts: { dir: '/job/out', maxBytes: 1_000, maxFiles: 3 } };
+
+test('artifacts: the job output directory is collected, hashed and stored before the container is destroyed', async () => {
+  const h = harness(artifactSpec);
+  const run = h.controller.run(envelopeBytes());
+  await h.started();
+  h.container.files.set('/job/out/plan.json', encoder.encode('{"a":1}'));
+  h.container.files.set('/job/out/nested/state-serial.txt', encoder.encode('42\n'));
+  h.container.files.set('/elsewhere/not-collected', encoder.encode('x'));
+  h.container.execs[0]?.process.exit(0);
+  const outcome = done(await run);
+  assert.equal(outcome.status, 'succeeded');
+  assert.deepEqual(
+    outcome.artifacts.map((a) => [a.path, a.key, a.bytes]),
+    [
+      ['nested/state-serial.txt', logKey('artifacts/nested/state-serial.txt'), 3],
+      ['plan.json', logKey('artifacts/plan.json'), 7],
+    ],
+  );
+  assert.equal(outcome.artifacts[1]?.sha256, await sha256Hex(encoder.encode('{"a":1}')));
+  assert.equal(h.sink.text(logKey('artifacts/plan.json')), '{"a":1}');
+  assert.equal(h.sink.objects.get(logKey('artifacts/plan.json'))?.contentType, 'application/octet-stream');
+  assert.equal(h.container.destroys, 1);
+  assert.deepEqual(h.sink.json(logKey('outcome.json')), outcome);
+});
+
+test('artifacts: a file over the remaining budget is skipped and noted; later files still collect', async () => {
+  const h = harness(artifactSpec);
+  const run = h.controller.run(envelopeBytes());
+  await h.started();
+  h.container.files.set('/job/out/a-big.bin', new Uint8Array(1_001));
+  h.container.files.set('/job/out/b-small.txt', encoder.encode('ok'));
+  h.container.execs[0]?.process.exit(0);
+  const outcome = done(await run);
+  assert.deepEqual(outcome.artifacts.map((a) => a.path), ['b-small.txt']);
+  assert.match(outcome.notes.join('\n'), /a-big.bin \(1001 bytes\) exceeds the remaining budget of 1000 bytes/);
+});
+
+test('artifacts: the file count is capped and noted, unsafe paths and unreadable files are skipped', async () => {
+  const h = harness({ ...artifactSpec, artifacts: { dir: '/job/out', maxBytes: 1_000, maxFiles: 4 } });
+  const run = h.controller.run(envelopeBytes());
+  await h.started();
+  for (const name of ['1', '2', '3', '4']) h.container.files.set(`/job/out/${name}`, encoder.encode(name));
+  h.container.files.set('/job/out/../escape', encoder.encode('x'));
+  h.container.unreadable.add('/job/out/2');
+  h.container.execs[0]?.process.exit(1);
+  const outcome = done(await run);
+  assert.equal(outcome.status, 'failed');
+  assert.deepEqual(outcome.artifacts.map((a) => a.path), ['1', '3']);
+  const notes = outcome.notes.join('\n');
+  assert.match(notes, /1 artifact files beyond the limit of 4 were not collected/);
+  assert.match(notes, /unsafe path/);
+  assert.match(notes, /2 could not be read/);
+});
+
+test('artifacts: nothing is collected when the container died or the listing fails', async () => {
+  const died = harness(artifactSpec);
+  const run1 = died.controller.run(envelopeBytes());
+  await died.started();
+  died.container.files.set('/job/out/x', encoder.encode('x'));
+  died.container.die();
+  assert.deepEqual(done(await run1).artifacts, []);
+
+  const broken = harness(artifactSpec);
+  broken.container.failFind = true;
+  const run2 = broken.controller.run(envelopeBytes());
+  await broken.started();
+  broken.container.execs[0]?.process.exit(0);
+  const outcome = done(await run2);
+  assert.deepEqual(outcome.artifacts, []);
+  assert.match(outcome.notes.join('\n'), /artifact listing failed/);
+});
+
+test('secrets are resolved with the envelope so a source can scope a minted credential to the job', async () => {
+  const h = harness();
+  const run = h.controller.run(envelopeBytes());
+  await h.started();
+  h.container.execs[0]?.process.exit(0);
+  await run;
+  assert.deepEqual(h.secrets.requests, [{ name: 'CF_PLAN', job_id: JOB_ID }]);
+});
+
+const stageSpec = { ...planSpec, stage: { dir: '/job/in', maxBytes: 100, maxFiles: 2 } };
+
+test('stage: consumer-provided files are written into the container before the job runs', async () => {
+  const h = harness(stageSpec, { CF_PLAN: SECRET_VALUE }, [
+    { path: 'plan.tfplan', bytes: encoder.encode('binary-plan') },
+    { path: 'meta/summary.json', bytes: encoder.encode('{}') },
+  ]);
+  const run = h.controller.run(envelopeBytes());
+  await h.started();
+  assert.deepEqual(h.container.staged, ['/job/in/plan.tfplan', '/job/in/meta/summary.json']);
+  assert.equal(decoder.decode(h.container.files.get('/job/in/plan.tfplan')), 'binary-plan');
+  h.container.execs[0]?.process.exit(0);
+  const outcome = done(await run);
+  assert.equal(outcome.status, 'succeeded');
+  assert.match(outcome.notes.join('\n'), /staged 2 file\(s\) under \/job\/in/);
+});
+
+test('stage: unsafe paths, too many files, over-budget files and write failures are start failures', async () => {
+  for (const [files, pattern] of [
+    [[{ path: '../etc/passwd', bytes: new Uint8Array(1) }], /unsafe or duplicate path/],
+    [[{ path: 'a', bytes: new Uint8Array(1) }, { path: 'a', bytes: new Uint8Array(1) }], /unsafe or duplicate path/],
+    [[{ path: 'a', bytes: new Uint8Array(1) }, { path: 'b', bytes: new Uint8Array(1) }, { path: 'c', bytes: new Uint8Array(1) }], /exceed the limit of 2/],
+    [[{ path: 'big', bytes: new Uint8Array(101) }], /exceed the budget of 100 bytes/],
+  ] as const) {
+    const h = harness(stageSpec, { CF_PLAN: SECRET_VALUE }, [...files]);
+    const outcome = done(await h.controller.run(envelopeBytes()));
+    assert.equal(outcome.reason, 'start_failed', pattern.source);
+    assert.match(outcome.notes.join('\n'), pattern);
+    assert.equal(h.container.execs.length, 0, 'job never ran');
+    assert.equal(h.container.destroys, 1, 'container cleaned up');
+  }
+  const h = harness(stageSpec, { CF_PLAN: SECRET_VALUE }, [{ path: 'x', bytes: new Uint8Array(1) }]);
+  h.container.failStagePaths.add('/job/in/x');
+  const outcome = done(await h.controller.run(envelopeBytes()));
+  assert.equal(outcome.reason, 'start_failed');
+  assert.match(outcome.notes.join('\n'), /writing x exited 1/);
+});
+
+test('stage: a job type without a stage directory never calls the stager', async () => {
+  const h = harness(planSpec, { CF_PLAN: SECRET_VALUE }, [{ path: 'ignored', bytes: new Uint8Array(1) }]);
+  const run = h.controller.run(envelopeBytes());
+  await h.started();
+  assert.deepEqual(h.container.staged, []);
+  h.container.execs[0]?.process.exit(0);
+  await run;
 });

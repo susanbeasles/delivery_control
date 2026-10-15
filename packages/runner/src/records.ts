@@ -22,6 +22,14 @@ export interface LogRef {
   readonly truncated: boolean;
 }
 
+export interface ArtifactRef {
+  /** Path relative to the job type's artifact directory. */
+  readonly path: string;
+  readonly key: string;
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
 export interface Outcome {
   readonly v: 1;
   readonly job_id: string;
@@ -35,6 +43,7 @@ export interface Outcome {
   readonly finished_at: string;
   readonly duration_ms: number;
   readonly logs: { readonly stdout: LogRef | null; readonly stderr: LogRef | null };
+  readonly artifacts: readonly ArtifactRef[];
   readonly notes: readonly string[];
 }
 
